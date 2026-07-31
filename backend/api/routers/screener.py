@@ -119,12 +119,29 @@ class ScreenerRunRequest(BaseModel):
     limit: int = Field(default=100, ge=1, le=500)
 
 
+def _logo_id(entity_id: str | None, jurisdiction: str) -> str | None:
+    """Filename stem of the internal company logo, or None when we have none.
+
+    Mirrors company.py: the shared MZQA logo library names US files by
+    zero-padded CIK and JP files by EDINET code. INTL has no coverage, so those
+    resolve to None and the UI falls back to the external CDN / an initials tile.
+    """
+    if not entity_id or jurisdiction == "INTL":
+        return None
+    eid = str(entity_id).strip()
+    if not eid:
+        return None
+    return eid.zfill(10) if jurisdiction == "US" else eid
+
+
 class ScreenerRow(BaseModel):
     ticker: str
     name: str
     jurisdiction: Literal["US", "JP", "INTL"]
     sector: str | None = None
     metrics: dict[str, float | None]
+    # CIK (US, zero-padded) or EDINET code (JP); None for INTL — GET /logos/{id}.
+    logo_id: str | None = None
 
 
 class ScreenerRunResponse(BaseModel):
@@ -477,11 +494,16 @@ async def screener_run(req: ScreenerRunRequest) -> ScreenerRunResponse:
     nulls = "NULLS LAST" if sort_dir == "desc" else "NULLS FIRST"
     limit_arg = _arg(req.limit)
 
+    # Entity id used to resolve the internal /logos/{id} asset (US: CIK, JP:
+    # EDINET). INTL has no logo-library coverage, so it stays NULL.
+    entity_id_expr = "d.cik::text" if juris == "US" else "d.edinet_code" if juris == "JP" else "NULL::text"
+
     sql = f"""
         WITH candidates AS (
             SELECT d.primary_ticker AS ticker,
                    {name_expr} AS name,
                    d.gics_sector_code AS sector_code,
+                   {entity_id_expr} AS entity_id,
                    mc.market_cap_usd
                    {', ' + ', '.join(f'm."{d.key}"' for d in metric_defs if d.key != 'market_cap_usd') if metric_ids_no_mcap else ''}
             FROM   {dim_table} d
@@ -525,6 +547,7 @@ async def screener_run(req: ScreenerRunRequest) -> ScreenerRunResponse:
             jurisdiction=juris,
             sector=r["sector_code"],
             metrics=metrics_map,
+            logo_id=_logo_id(r["entity_id"], juris),
         ))
 
     return ScreenerRunResponse(

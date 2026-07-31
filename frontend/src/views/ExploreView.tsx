@@ -358,7 +358,7 @@ export function ExploreView({ onAnalyze }: { onAnalyze?: (ticker: string) => voi
                     <td className="num px-3 py-2.5 text-muted">{i + 1}</td>
                     <td className="px-3 py-2.5">
                       <div className="flex items-center gap-2.5">
-                        <BrandLogo ticker={r.ticker} name={r.name} />
+                        <BrandLogo ticker={r.ticker} name={r.name} logoId={r.logo_id} />
                         <div className="min-w-0">
                           <div className="font-semibold text-navy">{r.ticker}</div>
                           <div className="truncate text-[11px] text-muted">{r.name}</div>

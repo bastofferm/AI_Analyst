@@ -106,6 +106,8 @@ export type ScreenerSort = { key: string; dir: "asc" | "desc" };
 export type ScreenerRow = {
   ticker: string; name: string; jurisdiction: Jurisdiction;
   sector: string | null; metrics: Record<string, number | null>;
+  /** CIK (US, zero-padded) or EDINET code (JP); null for INTL — see GET /logos/{id}. */
+  logo_id?: string | null;
 };
 export type ScreenerRunRequest = {
   universe: ScreenerUniverse;
