@@ -32,7 +32,11 @@ AI_Analyst/
   or `claude-opus-4-8` with adaptive thinking). The registry lives in `backend/llm_providers.py`.
 - **Frontend:** Next.js 14 / React 18 / Tailwind on `:3027`, talking to the backend.
 - **Database:** the existing Postgres `xbrl_sec` (schema `sec`). **Read-only** — the app never
-  writes to it. Custom analyst types are persisted client-side (browser localStorage).
+  writes to it. Custom analyst types are persisted client-side (browser localStorage). Schema
+  setup and the data-acquisition/update pipeline (SEC/EDINET filings, Yahoo intl equities,
+  prices, MD&A, 13F/insider, news, macro/factor data, ETFs) are documented in
+  [`docs/data_pipeline.md`](docs/data_pipeline.md) — that tooling is separate, manual CLI
+  work, not something the running app triggers.
 
 ## Setup
 
@@ -53,6 +57,9 @@ setx DEEPSEEK_API_KEY "sk-your-key-here"     # optional; can also paste in the U
 # Set AI_ANALYST_LLM_PROVIDER to change the server-side default (defaults to deepseek).
 # Users can instead paste keys under Setup in the app: they are kept in the browser
 # session only and erased when the browser closes.
+
+# 4) No warehouse yet? Create the schema and load data — see docs/data_pipeline.md
+python -m xbrl_sec.sec.cli apply-schema
 
 # 4) (optional) copy .env.example -> .env to override DB host/schema
 ```
