@@ -12,6 +12,19 @@ It is carved out of the MZQA Equity Terminal and carries all the code it needs. 
 does **not** carry is the market/fundamentals data: it connects to the existing (read-only)
 Postgres `xbrl_sec` warehouse produced by the data pipeline.
 
+## Screenshots
+
+A look at the six-view frontend (US coverage shown). Full-size images live in
+[`screenshots/`](screenshots/).
+
+| Home — the landing hero | Explore — coverage universe with company logos |
+|---|---|
+| [![Home](screenshots/01-home.png)](screenshots/01-home.png) | [![Explore](screenshots/02-explore.png)](screenshots/02-explore.png) |
+| **Analyze — a single name (MSFT)** | **Compare — relative-value sector ranking** |
+| [![Analyze](screenshots/03-analyze-msft.png)](screenshots/03-analyze-msft.png) | [![Compare](screenshots/04-compare.png)](screenshots/04-compare.png) |
+| **Ideas — natural-language & quick screen** | **Quant — qlib return · risk · portfolio** |
+| [![Ideas](screenshots/05-ideas.png)](screenshots/05-ideas.png) | [![Quant](screenshots/06-quant.png)](screenshots/06-quant.png) |
+
 ## Architecture
 
 ```

@@ -8,6 +8,7 @@ import { api, type Range, type IndustryOption, type ScreenerRow, type SectorOpti
 import { useMoney } from "@/lib/currency";
 import { num, pct, signedTone } from "@/lib/fmt";
 import { InfoBox } from "@/components/ui/InfoBox";
+import { BrandLogo } from "@/components/ui/BrandLogo";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { HelpTip } from "@/components/ui/HelpTip";
@@ -356,8 +357,13 @@ export function ExploreView({ onAnalyze }: { onAnalyze?: (ticker: string) => voi
                   <tr key={r.ticker} className="border-t border-border-soft align-middle hover:bg-paper/60">
                     <td className="num px-3 py-2.5 text-muted">{i + 1}</td>
                     <td className="px-3 py-2.5">
-                      <div className="font-semibold text-navy">{r.ticker}</div>
-                      <div className="text-[11px] text-muted">{r.name}</div>
+                      <div className="flex items-center gap-2.5">
+                        <BrandLogo ticker={r.ticker} name={r.name} />
+                        <div className="min-w-0">
+                          <div className="font-semibold text-navy">{r.ticker}</div>
+                          <div className="truncate text-[11px] text-muted">{r.name}</div>
+                        </div>
+                      </div>
                     </td>
                     <td className="px-3 py-2.5 text-[11px] text-navy">{sectorName(r.sector)}</td>
                     <td className="num px-3 py-2.5 text-right font-medium text-navy">

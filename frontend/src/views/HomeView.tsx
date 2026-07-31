@@ -139,7 +139,7 @@ export function HomeView({
           <div className="max-w-xl">
             <div className="eyebrow-hero">MZQA · AI Investment Committee</div>
             <h1 className="hero-title" style={{ fontSize: 30, lineHeight: 1.15 }}>
-              Nine AI analysts. <em>One honest answer.</em>
+              Quantitative Equity Research through <em>Agentic AI</em>
             </h1>
             <p className="hero-subtext mt-3" style={{ fontSize: 12.5 }}>
               Wondering what a stock is really worth? Our committee of AI analysts — advocates, challengers, auditors
