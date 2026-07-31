@@ -1,0 +1,155 @@
+"""Earnings revision breadth — proxy from realised EPS YoY momentum.
+
+Until consensus-estimate data is wired in, we proxy "revision breadth" with:
+  breadth(month) = (#companies with positive EPS YoY this quarter) /
+                   (#companies with non-null EPS this quarter)
+joined to the contemporaneous business-cycle factor.
+
+Run:
+    python -m xbrl_sec.sec.sources.earnings_revision
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+
+import pandas as pd
+
+from xbrl_sec.sec.db.connection import connect
+
+logger = logging.getLogger("mzqa.earnings_revision")
+
+
+def _ensure_table() -> None:
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fact_earnings_revision (
+                date          DATE NOT NULL,
+                jurisdiction  CHAR(2) NOT NULL,
+                breadth       DOUBLE PRECISION,
+                cycle_factor  DOUBLE PRECISION,
+                n_companies   INTEGER,
+                PRIMARY KEY (date, jurisdiction)
+            );
+            """
+        )
+
+
+def _ensure_view_inputs() -> bool:
+    """Confirm a usable EPS-ish view exists. Returns False if we skip."""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT 1 FROM information_schema.tables
+               WHERE table_schema='sec' AND table_name='fact_fundamentals_us' LIMIT 1"""
+        )
+        if cur.fetchone() is None:
+            return False
+    return True
+
+
+def _eps_breadth(jurisdiction: str) -> pd.DataFrame:
+    table = "fact_fundamentals_us" if jurisdiction == "US" else "fact_fundamentals_jp"
+    issuer_col = "cik" if jurisdiction == "US" else "edinet_code"
+    concept = "us-gaap/NetIncomeLoss" if jurisdiction == "US" else "jpcrp_cor/NetIncomeLossSummaryOfBusinessResults"
+    sql = f"""
+        WITH yr AS (
+            SELECT {issuer_col} AS issuer_id,
+                   fiscal_year,
+                   AVG(value) AS ni
+            FROM   {table}
+            WHERE  fiscal_period='FY' AND fiscal_year >= 2010 AND concept_id=%s
+            GROUP  BY {issuer_col}, fiscal_year
+        ),
+        delta AS (
+            SELECT a.fiscal_year, a.issuer_id,
+                   a.ni, b.ni AS ni_prev,
+                   CASE WHEN b.ni IS NOT NULL AND b.ni <> 0
+                        THEN (a.ni - b.ni)/abs(b.ni) END AS yoy
+            FROM   yr a LEFT JOIN yr b
+                   ON a.issuer_id = b.issuer_id AND b.fiscal_year = a.fiscal_year - 1
+        )
+        SELECT fiscal_year::int AS year,
+               COUNT(*) FILTER (WHERE yoy IS NOT NULL)::int AS n,
+               (COUNT(*) FILTER (WHERE yoy > 0)::float /
+                NULLIF(COUNT(*) FILTER (WHERE yoy IS NOT NULL),0)) AS breadth
+        FROM   delta
+        GROUP  BY fiscal_year
+        ORDER  BY fiscal_year
+    """
+    with connect() as conn:
+        try:
+            df = pd.read_sql(sql, conn, params=(concept,))
+        except Exception as exc:
+            logger.warning("%s breadth query failed: %s", jurisdiction, exc)
+            return pd.DataFrame()
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["year"].astype(str) + "-12-31")
+    return df[["date", "breadth", "n"]]
+
+
+def _cycle_at(date_idx: pd.Index, factor_id: str) -> pd.Series:
+    with connect() as conn:
+        df = pd.read_sql(
+            "SELECT date, value FROM fact_macro_factor WHERE factor_id=%s ORDER BY date",
+            conn, params=(factor_id,),
+        )
+    if df.empty:
+        return pd.Series(dtype=float, index=date_idx)
+    df["date"] = pd.to_datetime(df["date"])
+    s = pd.Series(df["value"].values, index=df["date"]).sort_index()
+    return s.reindex(date_idx, method="ffill")
+
+
+def compute_revisions(jurisdiction: str) -> int:
+    breadth_df = _eps_breadth(jurisdiction)
+    if breadth_df.empty:
+        return 0
+    breadth_df = breadth_df.set_index("date")
+    factor_id = "us_cycle" if jurisdiction == "US" else "jp_cycle"
+    breadth_df["cycle_factor"] = _cycle_at(breadth_df.index, factor_id).values
+
+    rows: list[tuple] = []
+    for dt, r in breadth_df.iterrows():
+        rows.append((
+            dt.date(), jurisdiction,
+            float(r["breadth"]) if pd.notna(r["breadth"]) else None,
+            float(r["cycle_factor"]) if pd.notna(r["cycle_factor"]) else None,
+            int(r["n"]),
+        ))
+    with connect() as conn, conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO fact_earnings_revision (date, jurisdiction, breadth, cycle_factor, n_companies)
+            VALUES (%s,%s,%s,%s,%s)
+            ON CONFLICT (date, jurisdiction) DO UPDATE SET
+                breadth = EXCLUDED.breadth,
+                cycle_factor = EXCLUDED.cycle_factor,
+                n_companies = EXCLUDED.n_companies
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    p = argparse.ArgumentParser()
+    p.add_argument("--region", choices=["us", "jp", "all"], default="all")
+    args = p.parse_args()
+    _ensure_table()
+    if not _ensure_view_inputs():
+        logger.warning("No fact_fundamentals_us table — skipping")
+        return
+    out = {}
+    if args.region in ("us", "all"):
+        out["us"] = compute_revisions("US")
+    if args.region in ("jp", "all"):
+        out["jp"] = compute_revisions("JP")
+    import json
+    print(json.dumps(out))
+
+
+if __name__ == "__main__":
+    main()

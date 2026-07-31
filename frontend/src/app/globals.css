@@ -1,0 +1,488 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #F5F4F0;
+  --panel: #FBFAF7;
+  --navy: #2F4D73;
+  --navy-2: #476D99;
+  --navy-3: #6B86A8;
+  --muted: #6F7890;
+  --border: #DDD8CD;
+  --border-soft: #EEECE5;
+  --green: #16A34A;
+  --red: #DC2626;
+  --amber: #F59E0B;
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--navy);
+  font-family: Inter, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 13px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.label {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.tab {
+  display: block;
+  flex-shrink: 0;
+  padding: 10px 20px 9px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tab:hover { color: var(--navy); }
+.tab.active {
+  color: var(--navy);
+  border-bottom-color: var(--navy);
+  font-weight: 600;
+}
+
+.subtab {
+  padding: 8px 16px 7px;
+  font-size: 12px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.subtab:hover { color: var(--navy); }
+.subtab.active {
+  color: var(--navy);
+  border-bottom-color: var(--navy);
+  font-weight: 600;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.fg-dot {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.fg-dot.filled  { background: var(--green); }
+.fg-dot.partial { background: var(--green); opacity: 0.35; }
+.fg-dot.miss    { background: rgba(220, 38, 38, 0.25); }
+.fg-dot.empty   { background: var(--border); }
+
+.home-search-input--light::placeholder {
+  color: rgba(47, 77, 115, 0.35);
+}
+.home-search-input--dark::placeholder {
+  color: rgba(240, 237, 230, 0.30);
+}
+
+/* ----------------------------------------------------------------------- */
+/* Site-wide typography utility classes                                    */
+/* ----------------------------------------------------------------------- */
+
+/* Hero-scale typography (used inside dark-navy heroes) */
+.eyebrow-hero {
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(240, 237, 230, 0.40);
+  margin-bottom: 12px;
+}
+.hero-title {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: #FBFAF7;
+  margin: 0 0 8px 0;
+}
+.hero-title em {
+  font-style: normal;
+  font-weight: 300;
+  color: #a8b8d8;
+}
+.hero-subtext {
+  font-size: 11px;
+  font-weight: 300;
+  line-height: 1.65;
+  color: rgba(240, 237, 230, 0.55);
+  max-width: 480px;
+  margin: 0;
+}
+.hero-right-eyebrow {
+  font-size: 8px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(240, 237, 230, 0.32);
+  margin-bottom: 18px;
+}
+.hero-stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: #FBFAF7;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+.hero-stat-label {
+  font-size: 9px;
+  color: rgba(240, 237, 230, 0.32);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+.hero-stat-caption {
+  font-size: 9px;
+  font-weight: 500;
+  color: rgba(240, 237, 230, 0.45);
+  margin-top: 2px;
+}
+
+/* Page-scale typography (used on light backgrounds outside heroes) */
+.page-eyebrow {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(47, 77, 115, 0.40);
+}
+.page-title {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: #2F4D73;
+  margin: 0;
+}
+.page-subtext {
+  font-size: 12px;
+  font-weight: 300;
+  line-height: 1.6;
+  color: rgba(47, 77, 115, 0.65);
+  margin: 0;
+}
+.section-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #2F4D73;
+}
+
+/* Hero tile graphic animations -------------------------------------------- */
+@keyframes mzqa-cube-spin {
+  from { transform: rotateY(0deg); }
+  to   { transform: rotateY(360deg); }
+}
+@keyframes mzqa-macro-pulse {
+  0%, 100% { transform: translate(0, 0); r: 3; }
+  50%      { transform: translate(0, -2px); r: 4; }
+}
+@keyframes mzqa-line-draw {
+  0%   { stroke-dashoffset: 220; }
+  60%  { stroke-dashoffset: 0; }
+  100% { stroke-dashoffset: 0; }
+}
+@keyframes mzqa-bar-wave {
+  0%, 100% { transform: scaleY(1); }
+  50%      { transform: scaleY(0.78); }
+}
+@keyframes mzqa-equity-bounce {
+  0%, 100% { transform: scaleY(1); }
+  50%      { transform: scaleY(1.18); }
+}
+
+.mzqa-cube-wrap {
+  perspective: 220px;
+  display: inline-block;
+}
+.mzqa-cube-wrap svg {
+  transform-style: preserve-3d;
+  transform-origin: center;
+  animation: mzqa-cube-spin 9s linear infinite;
+}
+.mzqa-macro-dot {
+  animation: mzqa-macro-pulse 2.4s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.mzqa-macro-line {
+  stroke-dasharray: 220;
+  animation: mzqa-line-draw 4s ease-in-out infinite;
+}
+.mzqa-portfolio-bar {
+  transform-origin: 50% 100%;
+  animation: mzqa-bar-wave 1.8s ease-in-out infinite;
+}
+.mzqa-equity-bar {
+  transform-origin: 50% 100%;
+  animation: mzqa-equity-bounce 2.6s ease-in-out infinite;
+}
+
+/* Curve history 3D animation ------------------------------------------------
+   Each polyline starts at its 3D-projected offset (--cx, --cy) and:
+   1. Draws in from oldest→newest with staggered animation-delay (~2.6s each)
+   2. Collapses translation toward (0,0) at +3000ms (~2s)
+   3. Fades to --ofade (1 for the latest curve, 0 for older curves) at +5000ms (~1.5s)
+   Total animation: ~6.5s. Per-line durations + delays are set inline on the
+   <path> elements so we can tune the staggering from the component. */
+.mzqa-curve-line {
+  transform: translate(var(--cx, 0px), var(--cy, 0px));
+  opacity: 0;
+  stroke-dasharray: 600;
+  stroke-dashoffset: 600;
+  animation-name: mzqa-curve-draw, mzqa-curve-collapse, mzqa-curve-fade;
+  animation-fill-mode: forwards, forwards, forwards;
+  animation-timing-function: ease-out, ease-in-out, ease-in;
+}
+@keyframes mzqa-curve-draw {
+  from { opacity: 0; stroke-dashoffset: 600; }
+  to   { opacity: var(--ofin, 0.5); stroke-dashoffset: 0; }
+}
+@keyframes mzqa-curve-collapse {
+  from { transform: translate(var(--cx, 0px), var(--cy, 0px)); }
+  to   { transform: translate(0, 0); }
+}
+@keyframes mzqa-curve-fade {
+  from { opacity: var(--ofin, 0.5); }
+  to   { opacity: var(--ofade, 0); }
+}
+
+/* Final 2D plane — gridlines, axis baseline, pillars, tooltip — fades in
+   in sync with the older polylines fading out (Phase 3 starts at 5000ms). */
+.mzqa-curve-finalmarks {
+  opacity: 0;
+  animation: mzqa-curve-marks-fade 1.5s ease-in forwards;
+  animation-delay: 5000ms;
+}
+@keyframes mzqa-curve-marks-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Chip row + caption fade-in once "landed" state flips in JS (≈6500ms). */
+.mzqa-curve-landed {
+  animation: mzqa-curve-landed-fade 0.4s ease-out forwards;
+}
+@keyframes mzqa-curve-landed-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Inflation tile value swap — fade in when the rendered value changes
+   (driven by a key prop change in MacroTile). */
+.mzqa-tile-value-fade {
+  animation: mzqa-tile-value-fade 0.2s ease-out;
+}
+@keyframes mzqa-tile-value-fade {
+  from { opacity: 0.2; }
+  to   { opacity: 1; }
+}
+
+/* Rotating market-wisdom fact swap (driven by a key prop change in FunFactCard) */
+.fact-swap {
+  animation: fact-swap-in 0.5s ease-out;
+}
+@keyframes fact-swap-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ------------------------------------------------------------------
+   Chip & mini-card motion. `.rise-in` is a staggered entrance (set
+   animation-delay inline per index); `.hover-lift` is a gentle raise on
+   hover; `.spark-draw` draws sparkline polylines left-to-right (requires
+   pathLength=1 on the polyline). All entrances are disabled for users who
+   prefer reduced motion — cards simply render in place. */
+.hover-lift {
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(47, 77, 115, 0.12);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rise-in {
+    opacity: 0;
+    animation: rise-in 0.45s ease-out forwards;
+  }
+  @keyframes rise-in {
+    from { opacity: 0; transform: translateY(7px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .spark-draw {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    animation: spark-draw 1s ease-out forwards;
+  }
+  @keyframes spark-draw {
+    to { stroke-dashoffset: 0; }
+  }
+}
+
+/* Filing-coverage popout open/close animation */
+@keyframes filing-popout-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ------------------------------------------------------------------
+   Workflow-graph motion (components/committee/WorkflowGraph.tsx).
+   Every edge sets pathLength="100" so one dash length works for paths of
+   any real length: a 6-unit dash travels the whole edge, which reads as a
+   packet moving between nodes. `.mzqa-flow-live` is the edge currently
+   carrying work; `.mzqa-flow-idle` is the slower ambient version. */
+@keyframes mzqa-flow-dash {
+  from { stroke-dashoffset: 100; }
+  to   { stroke-dashoffset: 0; }
+}
+@keyframes mzqa-node-halo {
+  0%, 100% { opacity: 0.15; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(1.09); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .mzqa-flow-live {
+    stroke-dasharray: 6 94;
+    animation: mzqa-flow-dash 1.4s linear infinite;
+  }
+  .mzqa-flow-idle {
+    stroke-dasharray: 4 96;
+    animation: mzqa-flow-dash 3.6s linear infinite;
+  }
+  .mzqa-node-halo {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: mzqa-node-halo 2s ease-in-out infinite;
+  }
+}
+
+/* ----------------------------------------------------------------------- */
+/* Consumer-app additions (badges, numerals, skeletons, memo prose)        */
+/* ----------------------------------------------------------------------- */
+
+.badge-pos {
+  background: rgba(22, 163, 74, 0.10);
+  color: var(--green);
+}
+.badge-neg {
+  background: rgba(220, 38, 38, 0.10);
+  color: var(--red);
+}
+.badge-neu {
+  background: rgba(111, 120, 144, 0.10);
+  color: var(--muted);
+}
+
+/* Numbers are always mono + tabular */
+.num {
+  font-family: Consolas, "Courier New", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Skeleton shimmer for loading states */
+@keyframes skeleton-shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.skeleton {
+  border-radius: 4px;
+  background: linear-gradient(90deg, #EEECE5 25%, #F5F4F0 50%, #EEECE5 75%);
+  background-size: 800px 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+/* Styled markdown for committee memos + group verdicts (consumer scale) */
+.memo-prose {
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--navy);
+  font-weight: 350;
+}
+.memo-prose h1, .memo-prose h2, .memo-prose h3, .memo-prose h4 {
+  color: var(--navy);
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 1.6em 0 0.5em;
+}
+.memo-prose h1 { font-size: 19px; }
+.memo-prose h2 { font-size: 16px; border-bottom: 1px solid var(--border-soft); padding-bottom: 6px; }
+.memo-prose h3 { font-size: 14px; }
+.memo-prose h4 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.memo-prose > :first-child { margin-top: 0; }
+.memo-prose p { margin: 0.7em 0; }
+.memo-prose ul, .memo-prose ol { margin: 0.7em 0; padding-left: 1.4em; }
+.memo-prose li { margin: 0.3em 0; }
+.memo-prose ul li { list-style: disc; }
+.memo-prose ol li { list-style: decimal; }
+.memo-prose strong { font-weight: 600; }
+.memo-prose blockquote {
+  margin: 0.9em 0;
+  padding: 8px 14px;
+  border-left: 3px solid var(--amber);
+  background: rgba(245, 158, 11, 0.06);
+  border-radius: 0 4px 4px 0;
+  color: var(--muted);
+}
+.memo-prose code {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.memo-prose pre {
+  overflow-x: auto;
+  background: var(--bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 12px;
+  margin: 0.9em 0;
+}
+.memo-prose pre code { border: none; background: none; padding: 0; }
+.memo-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 12px;
+}
+.memo-prose th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 10px;
+}
+.memo-prose td {
+  border-bottom: 1px solid var(--border-soft);
+  padding: 6px 10px;
+  font-variant-numeric: tabular-nums;
+}
+.memo-prose hr { border: none; border-top: 1px solid var(--border); margin: 1.4em 0; }
+.memo-prose a { color: var(--navy-2); text-decoration: underline; text-underline-offset: 2px; }

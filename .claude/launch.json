@@ -1,0 +1,21 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ai-analyst-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
+      "port": 3027
+    },
+    {
+      "name": "ai-analyst-backend",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:PYTHONPATH = Join-Path (Get-Location) 'backend'; $env:MZQA_SKIP_SCHEMA = '1'; & .\\.venv\\Scripts\\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8027"
+      ],
+      "port": 8027
+    }
+  ]
+}

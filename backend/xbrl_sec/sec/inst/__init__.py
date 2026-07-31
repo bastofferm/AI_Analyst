@@ -1,0 +1,1 @@
+"""SEC institutional ownership ingestion."""

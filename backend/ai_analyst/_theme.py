@@ -1,0 +1,18 @@
+"""Palette + typography tokens mirrored from MZQA Terminal V2."""
+BG     = "#F5F4F0"
+PANEL  = "#FBFAF7"
+AMBER  = "#1A2744"
+WHITE  = "#1A2744"
+YELLOW = "#F59E0B"
+GREEN  = "#16A34A"
+RED    = "#DC2626"
+BLUE   = "#1A2744"
+CYAN   = "#0EA5E9"
+PURPLE = "#8B5CF6"
+MUTED  = "#6F7890"
+BORD   = "#EEECE5"
+BORD2  = "#DDD8CD"
+FONT   = "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif"
+MONO   = "'Consolas', 'Courier New', monospace"
+
+SERIES_COLORS = [AMBER, GREEN, YELLOW, CYAN, RED, PURPLE, "#3B465C", "#8A7558", "#A35D5D", "#5F8A7A"]

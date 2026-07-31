@@ -1,0 +1,65 @@
+# AI_Analyst standalone — lean runtime deps for the Investment Committee app.
+#
+# This is the trimmed set the committee + screener + group + value/sentiment agent
+# actually import at runtime. The original full monorepo superset (torch, transformers,
+# cvxpy, dash, selenium, …) is preserved as requirements-full.txt but is NOT needed:
+# the heavy deps live only in the old Dash UI files, which this app never imports.
+#
+# Install:  python -m venv .venv && .venv\Scripts\pip install -r backend/requirements.txt
+
+# --- Web / API ---
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.32,<1.0
+asyncpg>=0.30,<1.0
+pydantic>=2.9,<3.0
+pydantic-settings>=2.5,<3.0
+python-dotenv>=1.0,<2.0
+structlog>=24.4,<25.0
+httpx>=0.27,<1.0
+
+# --- LLM / graph orchestration (committee tribunal) ---
+langchain-core>=0.3,<0.4
+langchain-community>=0.3,<0.4
+langgraph>=0.2,<0.3
+
+# --- Claude provider (OpenAI / DeepSeek / Moonshot / Gemini ride the httpx path) ---
+anthropic>=0.70
+langchain-anthropic>=0.3,<0.4
+
+# --- Data / numeric ---
+pandas>=2.0
+numpy>=1.26
+scipy>=1.11
+psycopg2-binary>=2.9
+python-dateutil>=2.9
+pytz>=2024.1
+yfinance>=0.2
+
+# --- MD&A / HTML text extraction (fact_mda_sections + xbrl_sec.sec.mda.text) ---
+beautifulsoup4>=4.12
+lxml>=5.0
+
+# --- Quant alpha / risk / portfolio (qlib integration: api/quant/qlib_*) ---
+# qlib has no wheel for Python 3.13, so build the bundled clone from source
+# (requires an MSVC C++ toolchain for its Cython extensions). Install NON-editable
+# so `import qlib` resolves from site-packages regardless of the launch directory —
+# an EDITABLE install is shadowed by the ./qlib clone dir when the backend starts
+# from the project root (as start_committee.bat does), breaking every qlib import:
+#     .venv\Scripts\pip install ./qlib --no-build-isolation --no-deps
+# IMPORTANT: run the backend with the venv's Python (.venv\Scripts\python), not a
+# bare `python` that may resolve to a different interpreter without qlib installed.
+# The following are qlib's lean-path RUNTIME deps we actually import (the heavy
+# extras it declares -- jupyter/nbconvert/matplotlib -- are not needed):
+lightgbm>=4.7            # LGBModel cross-sectional alpha model
+scikit-learn>=1.5        # StructuredCovEstimator (PCA/FactorAnalysis)
+cvxpy>=1.6               # EnhancedIndexingOptimizer (tracking-error)
+ecos>=2.0                # cvxpy solver used by EnhancedIndexingOptimizer
+mlflow>=2.0              # imported by qlib.workflow (LGBModel import path); not used at runtime
+gym>=0.26                # imported by qlib.contrib.strategy package init; not used at runtime
+pyarrow>=15              # qlib.data storage layer
+dill>=0.3                # model artifact (de)serialization
+python-redis-lock>=4.0   # qlib.data cache locking (import-time dependency)
+redis>=5.0               # transitive of python-redis-lock (no server needed)
+loguru>=0.7
+ruamel.yaml>=0.17
+setuptools-scm>=8        # qlib.__init__ imports it at runtime
