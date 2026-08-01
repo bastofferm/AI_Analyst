@@ -75,7 +75,12 @@ def default_config() -> dict[str, Any]:
         # DeepSeek aliases, kept as the historical defaults. When the run targets
         # another provider these are treated as "unset" (see nodes._LEGACY_DEEPSEEK
         # _MODELS) and that provider's registry models are used instead.
-        "reasoning_model": "deepseek-reasoner",   # deep chain-of-thought for analysis/narrative
+        # NB: deepseek-reasoner (and the deepseek-v4 "reasoning" tiers) spend the whole
+        # max_tokens budget on hidden reasoning for the committee's large (~8k-token)
+        # evidence-packet prompts and return EMPTY content (finish_reason=length),
+        # which surfaces as every analyst falling back to a placeholder. deepseek-chat
+        # answers these prompts directly (no runaway reasoning), so use it for narrative.
+        "reasoning_model": "deepseek-chat",       # narrative/analysis (was deepseek-reasoner — see above)
         "structured_model": "deepseek-chat",      # reliable tool/JSON for scenario extraction
         "scenario_weight_mode": "macro_adjusted",  # "fixed" | "macro_adjusted"
         "base_weights": {"upside": 0.25, "base": 0.50, "downside": 0.25},
