@@ -41,6 +41,9 @@ if not exist "%NEXT_BIN%" (
 REM --- Backend runtime env (inherited by the child windows) ---
 set "PYTHONPATH=%ROOT%\backend"
 set "MZQA_SKIP_SCHEMA=1"
+REM Disable the shared SQLite LLM cache: it is not concurrency-safe and can
+REM poison committee runs (empty-content replays / "database is locked").
+set "MZQA_DISABLE_LLM_CACHE=1"
 set "DATABASE_URL=postgresql://postgres@127.0.0.1:5432/xbrl_sec"
 set "XBRL_SEC_DATABASE_URL=postgresql://postgres@127.0.0.1:5432/xbrl_sec"
 set "DB_SCHEMA=sec"
