@@ -93,8 +93,13 @@ PROVIDERS: dict[str, Provider] = {
         base_url="https://api.deepseek.com/v1",
         hosts=frozenset({"api.deepseek.com"}),
         env=("DEEPSEEK_API_KEY",),
-        chat_model="deepseek-v4-flash",
-        reasoner_model="deepseek-v4-pro",
+        # NB: the v4 "reasoning" tiers (deepseek-v4-flash / deepseek-v4-pro) spend
+        # the whole max_tokens budget on hidden reasoning for the committee's large
+        # evidence-packet prompts and return EMPTY content (finish_reason=length),
+        # which the committee surfaces as "(LLM error: ValueError) empty content".
+        # deepseek-chat returns answer content directly at every prompt size tested.
+        chat_model="deepseek-chat",
+        reasoner_model="deepseek-chat",
         key_placeholder="sk-…",
         docs_url="https://platform.deepseek.com/api_keys",
         caps=Caps(),

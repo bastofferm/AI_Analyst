@@ -15,10 +15,23 @@ def cache_path() -> Path:
     return Path(root) / ".cache" / "llm" / "deepseek_cache.sqlite"
 
 
+def _cache_disabled() -> bool:
+    return str(os.environ.get("MZQA_DISABLE_LLM_CACHE", "")).lower() in {"1", "true", "yes"}
+
+
 def setup_llm_cache() -> None:
-    """Aktiviert den globalen SQLite-Cache für LangChain-LLM-Calls (idempotent)."""
+    """Aktiviert den globalen SQLite-Cache für LangChain-LLM-Calls (idempotent).
+
+    Opt-out via MZQA_DISABLE_LLM_CACHE=1: the SQLite cache is not concurrency-safe,
+    so parallel fan-outs (e.g. the committee's specialists) can trip
+    "database is locked" OperationalErrors. Disabling it trades the speedup for
+    correct behaviour under concurrency.
+    """
     global _CACHE_INSTALLED
     if _CACHE_INSTALLED:
+        return
+    if _cache_disabled():
+        _CACHE_INSTALLED = True  # don't retry; leaves the global cache unset (None)
         return
     try:
         from langchain_core.caches import BaseCache
