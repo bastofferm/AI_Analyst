@@ -12,6 +12,10 @@ view, taken against live US warehouse data at 1440×1024 (2× DPI).
 | `05-ideas.png` | Ideas | One-click quick scan + natural-language screen |
 | `06-quant.png` | Quant | qlib return / risk / portfolio desk with alpha-model predictions |
 
+The above are a static tour of each view. For **real run outputs** — a full MSFT
+committee verdict + debate, the screener, and a quant optimization + backtest —
+see [`examples/`](examples/).
+
 Regenerate after UI changes with the puppeteer script kept in the scratchpad
 (`shots.js`) while the backend (`:8027`) and frontend (`:3027`) are running —
 it drives the six views and re-saves these files.
