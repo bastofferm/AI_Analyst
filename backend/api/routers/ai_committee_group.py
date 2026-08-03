@@ -68,6 +68,16 @@ async def committee_group(req: GroupRequest) -> GroupResponse:
     api_key = (req.api_key or llm_runtime.resolve_env_key(provider) or "").strip()
     warnings: list[str] = []
 
+    # The relative-value composite (group.py) scores a rich valuation/growth/quality
+    # set; make the screener return those columns so every scored metric has data to
+    # z-score. Imported here (not lazily below) so the resolve step can request them.
+    try:
+        from ai_analyst.committee import group as group_mod  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to import ai_analyst.committee.group")
+        raise HTTPException(status_code=500, detail=f"Group committee unavailable: {exc.__class__.__name__}: {exc}")
+    metric_keys = group_mod.SCREENER_METRIC_KEYS
+
     # 1) Resolve the universe → filters/sort → rows.
     # Normalize INTL geography once so every branch uses the same values.
     country_code = req.country_code.strip().upper() if (req.country_code and req.jurisdiction == "INTL") else None
@@ -86,7 +96,8 @@ async def committee_group(req: GroupRequest) -> GroupResponse:
         for juris in ("US", "JP", "INTL"):
             sub = await screener_run(ScreenerRunRequest(
                 universe=Universe(jurisdiction=juris, portfolio_tickers=wanted),
-                filters={}, sort=Sort(key="market_cap_usd", dir="desc"), limit=req.limit))
+                filters={}, sort=Sort(key="market_cap_usd", dir="desc"), limit=req.limit,
+                metrics=metric_keys))
             for r in sub.rows:
                 by_ticker.setdefault(r.ticker.upper(), r.model_dump())
         # Preserve the caller's order (the screens already ranked them), then cap.
@@ -120,19 +131,13 @@ async def committee_group(req: GroupRequest) -> GroupResponse:
 
         # 2) Resolve → capped ticker set (deterministic screener).
         run = await screener_run(ScreenerRunRequest(
-            universe=universe, filters=filters, sort=sort, limit=req.limit))
+            universe=universe, filters=filters, sort=sort, limit=req.limit, metrics=metric_keys))
         rows = [r.model_dump() for r in run.rows]
 
     if not rows:
         raise HTTPException(status_code=422, detail="No names matched the group definition.")
 
     # 3) One relative-value committee deliberation (sync, on a worker thread).
-    try:
-        from ai_analyst.committee import group as group_mod  # type: ignore[import-not-found]
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to import ai_analyst.committee.group")
-        raise HTTPException(status_code=500, detail=f"Group committee unavailable: {exc.__class__.__name__}: {exc}")
-
     try:
         result = await asyncio.to_thread(
             group_mod.run_group_committee,
