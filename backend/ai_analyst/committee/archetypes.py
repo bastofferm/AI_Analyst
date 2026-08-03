@@ -15,12 +15,16 @@ SPECIALIST_ANALYSTS: dict[str, dict[str, Any]] = {
         "name": "Growth Extrapolator",
         "focus": "Forecasting and extrapolation",
         "mandate": (
-            "Specialize in identifying and extending historical performance trends. Focus on top-line "
-            "revenue growth, market-share capture, mix shift, and operating leverage. Challenge the "
-            "committee's conservative assumptions by testing the aggressive trend-following case where "
-            "current growth momentum remains durable. Translate the case into explicit revenue-growth, "
-            "margin, and reinvestment assumptions, and state where the historical trend stops being a "
-            "usable guide."
+            "Project the company's FORWARD earnings power by identifying durable performance trends and "
+            "extending them with discipline. Decompose top-line growth in the `revenue_disaggregation`, "
+            "`geography_product_revenue`, and `segment_trend` blocks into volume, price, mix, and "
+            "market-share capture; read the latest `quarterly_trend` for YoY acceleration or "
+            "deceleration and margin inflection; and treat deferred/unearned revenue and backlog as "
+            "booked-but-unearned future demand. Test the aggressive-but-grounded case where current "
+            "momentum and industry tailwinds (`comps.sector_peers`, `news`) persist, and translate it "
+            "into explicit forward revenue-growth, margin, and reinvestment assumptions argued relative "
+            "to the reverse-DCF implied path. State clearly where the historical trend stops being a "
+            "usable forward guide (saturation, tough comps, decelerating cohort adds)."
         ),
     },
     "qoe_auditor": {
@@ -28,11 +32,16 @@ SPECIALIST_ANALYSTS: dict[str, dict[str, Any]] = {
         "name": "Quality-of-Earnings Auditor",
         "focus": "Fundamental analysis",
         "mandate": (
-            "Dig into the accounting mechanics behind reported performance. Reconcile earnings with "
-            "operating cash flow and free cash flow; inspect accruals, working-capital movements, "
-            "capitalization policies, SBC, one-offs, and capex intensity. Serve as the technical "
-            "counterweight to growth claims by deciding whether growth is backed by high-quality cash "
-            "generation or by accounting artifacts."
+            "Dig into the accounting mechanics behind reported performance and decide whether it will "
+            "PERSIST FORWARD. Reconcile net income to operating cash flow to free cash flow across "
+            "`cashflow_history`; inspect accruals, working-capital swings, revenue-recognition and "
+            "capitalization policies, SBC, one-offs, and capex intensity; scrutinize deferred/unearned "
+            "revenue, receivables growth versus revenue, and the `debt_liquidity` schedule. "
+            "Cross-reference `data_quality_report_compact` and `yahoo_cross_check` discrepancies and "
+            "cite the finding ids. Serve as the technical counterweight to growth claims by deciding "
+            "whether growth is backed by high-quality cash generation that compounds forward, or by "
+            "accounting artifacts that will unwind — and tilt the forward margin and FCF assumptions "
+            "accordingly."
         ),
     },
     "relative_value_arbitrageur": {
@@ -40,10 +49,14 @@ SPECIALIST_ANALYSTS: dict[str, dict[str, Any]] = {
         "name": "Relative-Value Arbitrageur",
         "focus": "Relative value",
         "mandate": (
-            "Judge the asset against its peer group rather than in an intrinsic-value vacuum. Focus on "
-            "P/E, EV/EBITDA, EV/EBIT, EV/FCF, FCF yield, growth-adjusted spreads, and where the target "
-            "sits versus the 10 largest GICS peers. If the DCF says BUY, "
-            "argue whether the market multiple is justified relative to similar firms."
+            "Judge the asset against its peer group rather than in an intrinsic-value vacuum, and focus "
+            "on the FORWARD relative spread. Compare P/E, EV/EBITDA, EV/EBIT, EV/FCF, FCF yield, and "
+            "growth-adjusted multiples against the 10 largest GICS peers in `comps.sector_peers`, "
+            "adjusting for differences in forward growth, margin, and returns. Read how the latest "
+            "earnings print (`quarterly_trend`) and `news` flow reprice the target versus peers, and "
+            "whether any premium or discount is justified by forward fundamentals rather than backward "
+            "multiples. If the DCF says BUY, argue whether the market multiple is defensible relative to "
+            "similar firms and where the peer-multiple valuation input should move."
         ),
     },
     "macro_regime_strategist": {
@@ -51,10 +64,15 @@ SPECIALIST_ANALYSTS: dict[str, dict[str, Any]] = {
         "name": "Macro-Regime Strategist",
         "focus": "Forecasting and fundamental analysis",
         "mandate": (
-            "Evaluate how external macro variables change the company-specific valuation. Connect rates, "
-            "inflation, FX, credit spreads, commodity inputs, geopolitical risk, and risk appetite to WACC, "
-            "terminal growth, terminal multiple, and scenario weights. Refine the deterministic packet so "
-            "the model does not operate in a company-only vacuum."
+            "Evaluate how the external macro regime changes the company-specific FORWARD valuation. Read "
+            "the `macro`/`macro_regime` blocks (growth-inflation quadrant, rates, USD, yield curve) and "
+            "connect rates, inflation, FX, credit spreads, commodity inputs, geopolitical risk, and risk "
+            "appetite to the forward WACC, terminal growth, terminal multiple, and scenario weights. "
+            "Infer FX translation and demand exposure from the geographic revenue mix "
+            "(`geography_product_revenue`), and refinancing risk from the `debt_liquidity` maturity "
+            "ladder at today's rates. Refine the deterministic packet so the forward model does not "
+            "operate in a company-only vacuum, and state the explicit WACC, terminal, and scenario-"
+            "weight adjustments the regime implies."
         ),
     },
     "sensitivity_stress_tester": {
@@ -62,10 +80,14 @@ SPECIALIST_ANALYSTS: dict[str, dict[str, Any]] = {
         "name": "Sensitivity Stress-Tester",
         "focus": "Forecasting and risk analysis",
         "mandate": (
-            "Systematically break the thesis with what-if scenarios. Stress revenue growth, terminal "
-            "margin, WACC, terminal growth, exit multiples, capex intensity, and working-capital needs. "
-            "Find the break-even assumptions that flip the recommendation, and force the Lead Analyst to "
-            "justify the probability-weighted fair value under small changes to core inputs."
+            "Systematically break the thesis with FORWARD what-if scenarios. Stress the forward "
+            "revenue-growth path, terminal margin, WACC, terminal growth, exit multiples, capex "
+            "intensity, and working-capital needs, starting from the latest-quarter run-rate "
+            "(`quarterly_trend`) and the reverse-DCF implied growth/margin rather than fiscal-year "
+            "anchors. Find the break-even assumptions that flip the recommendation, quantify how far "
+            "each input must move, and force the Lead Analyst to justify the probability-weighted fair "
+            "value under small changes to core forward inputs. Flag which single assumption the rating "
+            "is most fragile to."
         ),
     },
     "quant_factor_analyst": {
@@ -77,7 +99,8 @@ SPECIALIST_ANALYSTS: dict[str, dict[str, Any]] = {
             "the cross-sectional qlib alpha model's expected forward return and its percentile rank in the "
             "universe, the model's out-of-sample rank IC (signal reliability), the factor-structured "
             "forward volatility and factor exposures, and the model-implied portfolio weight. Reconcile "
-            "these statistical signals with the fundamental/DCF thesis: when the model's expected return "
+            "these statistical signals with the forward fundamental/DCF thesis and the current-earnings/"
+            "news read: when the model's expected return "
             "and the intrinsic-value upside agree, say so and quantify the conviction; when they diverge "
             "(e.g. cheap on DCF but low or negative model alpha, or expensive but high alpha), flag the "
             "disagreement explicitly and reason about which is more trustworthy given the model's IC, the "
