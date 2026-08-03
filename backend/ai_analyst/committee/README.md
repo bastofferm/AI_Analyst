@@ -43,7 +43,7 @@ gate: completeness → dq_validation ─(fail)→ error_terminator
 | `run.py` | End-to-end CLI: (news) → committee → branded PDF, all into `<repo>/output` |
 | `state.py` | `InvestmentCommitteeState` + `CommitteeConfig` (models, weights, toggles) |
 | `nodes.py` | All node functions + two-tier LLM helpers (reasoner / structured) |
-| `prompts.py` | Advocate/Challenger/Auditor/Lead/Memo prompts (reasoner-oriented) |
+| `prompts.py` | Advocate/Challenger/Auditor/Lead/Memo prompts + shared forward-first / statement-reading / news-industry ground-rule blocks (reasoner-oriented) |
 | `schemas.py` | Pydantic structured-output schemas |
 | `wacc.py` | Fama-French / CAPM WACC with credit spread + audit trail |
 | `valuation.py` | Consolidated DCF, growth×WACC grid, **SOTP (primary)**, reverse-DCF, triangulation |
@@ -54,6 +54,7 @@ gate: completeness → dq_validation ─(fail)→ error_terminator
 | `newsmacro.py` | Macro regime/rates + news sentiment (macro-led fallback) + ingestion helper |
 | `charts.py` | Inline SVG charts (football-field, ROIC-vs-WACC, capex, price, trend, ownership, heatmap) |
 | `report_pdf.py` | Story-first + appendix HTML → PDF (headless Chrome), MZQA design tokens |
+| `scripts/dump_committee_prompts.py` | Regenerates [`docs/committee_member_prompts.md`](../../../docs/committee_member_prompts.md) from the live prompts — run after editing `prompts.py`/`archetypes.py` |
 
 ## Models
 
