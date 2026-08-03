@@ -25,19 +25,63 @@ from . import archetypes, group_prompts
 logger = logging.getLogger("mzqa.committee.group")
 
 # metric_key -> weight. Positive = higher is more attractive; negative = cheaper
-# (lower) is more attractive. Only keys present in the screener rows are used.
+# (lower) is more attractive. Only keys present in the screener rows are z-scored,
+# so a jurisdiction missing a metric simply skips it (see `_weights_for`). Weights
+# are tilted toward value (this is a relative-value committee), with growth a strong
+# secondary and margins a quality guard. The many correlated multiples carry smaller
+# weights so they enrich the "cheapness" read without swamping the P/E-FCF-growth core.
 _SCORE_WEIGHTS: dict[str, float] = {
-    "pe": -1.0,             # cheaper P/E better
-    "ev_ebitda": -1.0,      # cheaper EV/EBITDA better
-    "pb": -0.5,             # cheaper P/B better
-    "fcf_yield": 1.0,       # higher FCF yield better
+    # valuation — cheaper multiples (negative), higher yields (positive)
+    "pe": -1.0,                 # cheaper P/E better
+    "ev_ebitda": -1.0,          # cheaper EV/EBITDA better
+    "ev_ebit": -0.5,            # cheaper EV/EBIT better
+    "pb": -0.5,                 # cheaper P/B better
+    "p_fcf": -0.4,              # cheaper P/FCF better
+    "peg": -0.4,                # cheaper growth-adjusted P/E better
+    "ps": -0.3,                 # cheaper P/S better
+    "ev_sales": -0.3,           # cheaper EV/Sales better
+    "fcf_yield": 1.0,           # higher FCF yield better
+    "earnings_yield": 0.5,      # higher EBIT/EV better
+    "shareholder_yield": 0.4,   # higher buyback+dividend yield better
     "dividend_yield": 0.25,
-    "rev_yoy": 0.9,         # faster growth better
+    # growth — faster is better
+    "rev_yoy": 0.9,
     "rev_cagr_3y": 0.9,
-    "gross_margin": 0.4,    # higher quality better (guards value traps)
+    "rev_cagr_5y": 0.5,
+    "eps_yoy": 0.5,
+    "ni_yoy": 0.5,
+    "ebitda_yoy": 0.5,
+    "fcf_yoy": 0.4,
+    # quality — higher is better (guards value traps)
+    "gross_margin": 0.4,
     "operating_margin": 0.5,
 }
-_PCT_KEYS = {"fcf_yield", "dividend_yield", "rev_yoy", "rev_cagr_3y", "gross_margin", "operating_margin"}
+
+# Rendered as a percentage in the breakdown; everything else is a ratio.
+_PCT_KEYS = {
+    "fcf_yield", "earnings_yield", "shareholder_yield", "dividend_yield",
+    "rev_yoy", "rev_cagr_3y", "rev_cagr_5y", "eps_yoy", "ni_yoy", "ebitda_yoy",
+    "fcf_yoy", "gross_margin", "operating_margin",
+}
+
+# Metric keys the Yahoo-backed INTL warehouse (fact_metrics_intl) actually populates,
+# verified against coverage. US/JP score the full set above; INTL is restricted to
+# these so its breakdown isn't a wall of "Not available". Every key here also exists
+# for US/JP.
+_INTL_KEYS = {
+    "pe", "pb", "ev_ebitda", "fcf_yield", "dividend_yield", "p_fcf",
+    "rev_yoy", "rev_cagr_3y", "ebitda_yoy", "fcf_yoy",
+    "gross_margin", "operating_margin",
+}
+
+
+def _weights_for(jurisdiction: str | None) -> dict[str, float]:
+    """The scored metric set for a jurisdiction. INTL is restricted to the metrics
+    its warehouse populates; US/JP get the full valuation/growth/quality set."""
+    if str(jurisdiction or "US").upper() == "INTL":
+        return {k: w for k, w in _SCORE_WEIGHTS.items() if k in _INTL_KEYS}
+    return dict(_SCORE_WEIGHTS)
+
 
 # "Cheaper is better" multiples (negative weights). A NEGATIVE value here does not
 # mean cheap — it means the denominator is negative: loss-making earnings, negative
@@ -45,27 +89,47 @@ _PCT_KEYS = {"fcf_yield", "dividend_yield", "rev_yoy", "rev_cagr_3y", "gross_mar
 # distressed name in the group (a P/B of -68 would z-score as the biggest bargain
 # on the board), so they are excluded from the z-score population and reported as
 # unscored instead. Metrics where a negative reading IS meaningful — a negative FCF
-# yield really is worse than a positive one — keep their sign.
-_POSITIVE_ONLY = {"pe", "ev_ebitda", "pb"}
+# yield, earnings yield, shareholder yield, or growth rate really is worse than a
+# positive one — keep their sign.
+_POSITIVE_ONLY = {"pe", "ev_ebitda", "ev_ebit", "pb", "p_fcf", "peg", "ps", "ev_sales"}
 
 
 def _scorable(key: str, value: float) -> bool:
     """False when the value exists but cannot be ranked on this metric's scale."""
     return not (key in _POSITIVE_ONLY and value <= 0)
 
+
+# Screener metric keys the group must fetch so every scored metric has a column to
+# z-score. The group router passes these to screener_run as `metrics`; market cap is
+# joined separately. Superset (US/JP); INTL rows leave the absent ones null.
+SCREENER_METRIC_KEYS: list[str] = list(_SCORE_WEIGHTS)
+
+
 # Display metadata for the per-name score breakdown the UI renders next to the
 # ranking. `metric_id` is the warehouse metric the screener actually read
 # (fact_market_metrics / fact_metrics_*), so the panel can name its own source.
 _METRIC_META: dict[str, dict[str, str]] = {
-    "pe":               {"label": "P/E (trailing)",   "metric_id": "price_to_earnings_trailing",                  "group": "Valuation"},
-    "ev_ebitda":        {"label": "EV / EBITDA",      "metric_id": "enterprise_value_to_ebitda",                  "group": "Valuation"},
-    "pb":               {"label": "P/B",              "metric_id": "price_to_book",                               "group": "Valuation"},
-    "fcf_yield":        {"label": "FCF yield",        "metric_id": "free_cash_flow_yield",                        "group": "Valuation"},
-    "dividend_yield":   {"label": "Dividend yield",   "metric_id": "dividend_yield",                              "group": "Valuation"},
-    "rev_yoy":          {"label": "Revenue YoY",      "metric_id": "revenue_growth_year_over_year",               "group": "Growth"},
-    "rev_cagr_3y":      {"label": "Revenue CAGR 3Y",  "metric_id": "revenue_compound_annual_growth_rate_3_year",  "group": "Growth"},
-    "gross_margin":     {"label": "Gross margin",     "metric_id": "gross_margin",                                "group": "Quality"},
-    "operating_margin": {"label": "Operating margin", "metric_id": "operating_margin",                            "group": "Quality"},
+    "pe":                {"label": "P/E (trailing)",    "metric_id": "price_to_earnings_trailing",                                                   "group": "Valuation"},
+    "ev_ebitda":         {"label": "EV / EBITDA",       "metric_id": "enterprise_value_to_earnings_before_interest_taxes_depreciation_amortization", "group": "Valuation"},
+    "ev_ebit":           {"label": "EV / EBIT",         "metric_id": "enterprise_value_to_earnings_before_interest_taxes",                            "group": "Valuation"},
+    "pb":                {"label": "P/B",               "metric_id": "price_to_book",                                                                "group": "Valuation"},
+    "p_fcf":             {"label": "P/FCF",             "metric_id": "price_to_free_cash_flow",                                                      "group": "Valuation"},
+    "peg":               {"label": "PEG",               "metric_id": "price_to_earnings_growth",                                                     "group": "Valuation"},
+    "ps":                {"label": "P/S",               "metric_id": "price_to_sales",                                                               "group": "Valuation"},
+    "ev_sales":          {"label": "EV / Sales",        "metric_id": "enterprise_value_to_revenue",                                                  "group": "Valuation"},
+    "fcf_yield":         {"label": "FCF yield",         "metric_id": "free_cash_flow_yield",                                                         "group": "Valuation"},
+    "earnings_yield":    {"label": "Earnings yield",    "metric_id": "earnings_yield",                                                               "group": "Valuation"},
+    "shareholder_yield": {"label": "Shareholder yield", "metric_id": "total_shareholder_yield",                                                      "group": "Valuation"},
+    "dividend_yield":    {"label": "Dividend yield",    "metric_id": "dividend_yield",                                                               "group": "Valuation"},
+    "rev_yoy":           {"label": "Revenue YoY",       "metric_id": "revenue_growth_year_over_year",                                                "group": "Growth"},
+    "rev_cagr_3y":       {"label": "Revenue CAGR 3Y",   "metric_id": "revenue_compound_annual_growth_rate_3_year",                                   "group": "Growth"},
+    "rev_cagr_5y":       {"label": "Revenue CAGR 5Y",   "metric_id": "revenue_compound_annual_growth_rate_5_year",                                   "group": "Growth"},
+    "eps_yoy":           {"label": "EPS YoY",           "metric_id": "earnings_per_share_diluted_growth_year_over_year",                             "group": "Growth"},
+    "ni_yoy":            {"label": "Net income YoY",    "metric_id": "net_income_growth_year_over_year",                                             "group": "Growth"},
+    "ebitda_yoy":        {"label": "EBITDA YoY",        "metric_id": "earnings_before_interest_taxes_depreciation_amortization_growth_year_over_year", "group": "Growth"},
+    "fcf_yoy":           {"label": "FCF YoY",           "metric_id": "free_cash_flow_growth_year_over_year",                                         "group": "Growth"},
+    "gross_margin":      {"label": "Gross margin",      "metric_id": "gross_margin",                                                                 "group": "Quality"},
+    "operating_margin":  {"label": "Operating margin",  "metric_id": "operating_margin",                                                             "group": "Quality"},
 }
 
 
@@ -96,11 +160,15 @@ def _zscores(values: dict[str, float]) -> dict[str, float]:
     return {t: (v - mean) / sd for t, v in values.items()}
 
 
-def deterministic_ranking(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Composite relative-value ranking from the screener metrics. Always available."""
+def deterministic_ranking(rows: list[dict[str, Any]], jurisdiction: str | None = "US") -> list[dict[str, Any]]:
+    """Composite relative-value ranking from the screener metrics. Always available.
+
+    The scored metric set is jurisdiction-aware: US/JP use the full valuation / growth
+    / quality set; INTL is restricted to what its Yahoo-backed warehouse populates."""
+    weights = _weights_for(jurisdiction)
     # Per-metric z-scores across the group.
     z_by_key: dict[str, dict[str, float]] = {}
-    for key in _SCORE_WEIGHTS:
+    for key in weights:
         present = {}
         for r in rows:
             v = _num((r.get("metrics") or {}).get(key))
@@ -114,7 +182,7 @@ def deterministic_ranking(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for r in rows:
         t = r["ticker"]
         s = 0.0
-        for key, w in _SCORE_WEIGHTS.items():
+        for key, w in weights.items():
             z = z_by_key.get(key, {}).get(t)
             if z is not None:
                 s += w * z
@@ -139,23 +207,25 @@ def deterministic_ranking(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "composite_score": round(scores.get(r["ticker"], 0.0), 3),
             "rationale": _auto_rationale(r),
             "metrics": r.get("metrics") or {},
-            "score_inputs": _score_inputs(r, z_by_key),
+            "score_inputs": _score_inputs(r, z_by_key, weights),
         })
     return out
 
 
-def _score_inputs(row: dict[str, Any], z_by_key: dict[str, dict[str, float]]) -> list[dict[str, Any]]:
+def _score_inputs(row: dict[str, Any], z_by_key: dict[str, dict[str, float]],
+                  weights: dict[str, float]) -> list[dict[str, Any]]:
     """Per-metric audit trail for one name: the warehouse value, its z-score in
     this peer group, the weight applied, and the resulting contribution.
 
     The composite is just the sum of `contribution`, so the UI can show exactly
     why a name ranked where it did — including the metrics that were missing
-    from the warehouse and therefore scored nothing.
+    from the warehouse and therefore scored nothing. Only the jurisdiction's
+    scored metrics (`weights`) are listed.
     """
     metrics = row.get("metrics") or {}
     ticker = row["ticker"]
     inputs: list[dict[str, Any]] = []
-    for key, weight in _SCORE_WEIGHTS.items():
+    for key, weight in weights.items():
         meta = _METRIC_META.get(key, {})
         value = _num(metrics.get(key))
         z = z_by_key.get(key, {}).get(ticker)
@@ -395,7 +465,7 @@ def run_group_committee(*, rows: list[dict[str, Any]], universe: dict[str, Any],
     jurisdiction = str(universe.get("jurisdiction") or "US")
     prov = llm_providers.get(provider)
 
-    ranking = deterministic_ranking(rows)
+    ranking = deterministic_ranking(rows, jurisdiction)
     memo = group_prompts.GROUP_MEMO_OFFLINE.format(label=label, jurisdiction=jurisdiction, n=len(rows))
 
     if api_key and not _disabled():

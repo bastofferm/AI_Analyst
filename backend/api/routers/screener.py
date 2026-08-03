@@ -82,6 +82,44 @@ FILTER_CATALOGUE: list[FilterDef] = [
     FilterDef(key="rev_cagr_3y",    label="Revenue CAGR 3Y",  group="growth",
               metric_id="revenue_compound_annual_growth_rate_3_year", unit="pct",
               suggested_min=-0.2, suggested_max=0.5),
+    # --- extended valuation (well-covered for US/JP; sparse/absent for INTL) ---
+    FilterDef(key="ev_ebit",        label="EV / EBIT",        group="valuation",
+              metric_id="enterprise_value_to_earnings_before_interest_taxes", unit="ratio",
+              suggested_min=0, suggested_max=30),
+    FilterDef(key="ev_sales",       label="EV / Sales",       group="valuation",
+              metric_id="enterprise_value_to_revenue", unit="ratio",
+              suggested_min=0, suggested_max=15),
+    FilterDef(key="ps",             label="P/S",              group="valuation",
+              metric_id="price_to_sales", unit="ratio",
+              suggested_min=0, suggested_max=15),
+    FilterDef(key="p_fcf",          label="P/FCF",            group="valuation",
+              metric_id="price_to_free_cash_flow", unit="ratio",
+              suggested_min=0, suggested_max=40),
+    FilterDef(key="peg",            label="PEG",              group="valuation",
+              metric_id="price_to_earnings_growth", unit="ratio",
+              suggested_min=0, suggested_max=4),
+    FilterDef(key="earnings_yield", label="Earnings yield",   group="valuation",
+              metric_id="earnings_yield", unit="pct",
+              suggested_min=0, suggested_max=0.20),
+    FilterDef(key="shareholder_yield", label="Shareholder yield", group="valuation",
+              metric_id="total_shareholder_yield", unit="pct",
+              suggested_min=-0.05, suggested_max=0.15),
+    # --- extended growth (well-covered for US/JP; sparse/absent for INTL) ---
+    FilterDef(key="rev_cagr_5y",    label="Revenue CAGR 5Y",  group="growth",
+              metric_id="revenue_compound_annual_growth_rate_5_year", unit="pct",
+              suggested_min=-0.2, suggested_max=0.5),
+    FilterDef(key="eps_yoy",        label="EPS YoY",          group="growth",
+              metric_id="earnings_per_share_diluted_growth_year_over_year", unit="pct",
+              suggested_min=-0.5, suggested_max=1.0),
+    FilterDef(key="ni_yoy",         label="Net income YoY",   group="growth",
+              metric_id="net_income_growth_year_over_year", unit="pct",
+              suggested_min=-0.5, suggested_max=1.0),
+    FilterDef(key="ebitda_yoy",     label="EBITDA YoY",       group="growth",
+              metric_id="earnings_before_interest_taxes_depreciation_amortization_growth_year_over_year",
+              unit="pct", suggested_min=-0.5, suggested_max=1.0),
+    FilterDef(key="fcf_yoy",        label="FCF YoY",          group="growth",
+              metric_id="free_cash_flow_growth_year_over_year", unit="pct",
+              suggested_min=-0.5, suggested_max=1.0),
 ]
 
 
@@ -117,6 +155,10 @@ class ScreenerRunRequest(BaseModel):
     filters: dict[str, Range] = Field(default_factory=dict)
     sort: Sort = Sort()
     limit: int = Field(default=100, ge=1, le=500)
+    # Extra catalogue metric keys to return as columns without filtering on them.
+    # Used by the relative-value group committee so every scored metric has data;
+    # unknown keys are ignored. Absent metrics come back null (INTL leaves many null).
+    metrics: list[str] | None = None
 
 
 def _logo_id(entity_id: str | None, jurisdiction: str) -> str | None:
@@ -336,7 +378,10 @@ async def screener_run(req: ScreenerRunRequest) -> ScreenerRunResponse:
     # Build the metric-pivot CTE. We pull values for every requested filter +
     # the sort key + a small fixed display set so the response is informative.
     display_keys = ["market_cap_usd", "pe", "pb", "ev_ebitda", "fcf_yield", "rev_yoy"]
-    metric_keys = list({*filters.keys(), sort_key, *display_keys})
+    # Callers may request extra catalogue metrics as columns (not filtered on);
+    # unknown keys are ignored so a stale client can't break the query.
+    extra_metrics = [k for k in (req.metrics or []) if k in _CAT_BY_KEY]
+    metric_keys = list({*filters.keys(), sort_key, *display_keys, *extra_metrics})
     metric_defs = [_CAT_BY_KEY[k] for k in metric_keys]
 
     # Per-ticker latest-FY metric value. Three-way dispatch for US / JP / INTL.
