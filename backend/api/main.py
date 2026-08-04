@@ -52,7 +52,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     def _warm_quant() -> None:
         try:
             from api.quant import alpha_signal, qlib_backtest
-            alpha_signal.prewarm(("US", "JP"))
+            # US, JP, and every per-country INTL model the training ledger knows about.
+            intl = [m["model_key"] for m in alpha_signal.list_trained_models()
+                    if str(m.get("jurisdiction")) == "INTL" and m.get("model_key")]
+            alpha_signal.prewarm(("US", "JP", *intl))
             for j in ("US", "JP"):       # the walk-forward backtest is slow; warm both markets
                 qlib_backtest.prewarm(j)
         except Exception:  # noqa: BLE001

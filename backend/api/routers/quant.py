@@ -52,11 +52,14 @@ async def _in_thread(fn, *args, **kwargs):
 async def backends() -> dict[str, Any]:
     """List optimizer backends, risk models, and per-jurisdiction alpha-model metadata."""
     metas = {j: await asyncio.to_thread(alpha_signal.model_meta, j) for j in ("US", "JP")}
+    ledger = await asyncio.to_thread(alpha_signal.list_trained_models)
     return {
         "optimizers": qlib_optimize.available_backends(),
         "risk_models": list(RISK_MODELS),
         "alpha_sources": ["model", "historical"],
         "alpha_models": {j: m for j, m in metas.items() if m is not None},
+        # Full training ledger: US, JP, and per-country INTL models (rank_ic, coverage, next_due).
+        "trained_models": ledger,
     }
 
 
@@ -151,6 +154,9 @@ class OptimizeRequest(BaseModel):
     delta: float = 0.0
     b_dev: float = 0.05
     risk_free_annual: float = 0.045
+    # Per-name weight cap (concentration guard). Long-only MVO dumps into the single
+    # highest-expected-return name; a cap keeps the book diversified. null disables it.
+    max_weight: float | None = Field(default=0.35, ge=0.0, le=1.0)
 
 
 @router.post("/optimize")
@@ -163,6 +169,29 @@ async def optimize(req: OptimizeRequest) -> dict[str, Any]:
     if not result.get("ok", True):
         raise HTTPException(422, result.get("note", "optimization failed"))
     return result
+
+
+def _apply_weight_cap(w: np.ndarray, cap: float, iters: int = 200) -> np.ndarray:
+    """Project long-only weights onto ``{0 <= wᵢ <= cap, Σw = 1}`` by water-filling: clip
+    over-cap names to ``cap`` and redistribute the excess to the rest in proportion to their
+    weight. Preserves the optimizer's relative ordering while removing single-name dominance.
+    """
+    w = np.clip(np.asarray(w, dtype=float), 0.0, None)
+    total = w.sum()
+    w = w / total if total > 0 else np.full(len(w), 1.0 / len(w))
+    for _ in range(iters):
+        over = w > cap + 1e-12
+        if not over.any():
+            break
+        excess = float((w[over] - cap).sum())
+        w[over] = cap
+        under = ~over
+        pool = float(w[under].sum())
+        if pool <= 1e-12:  # everything at the cap → spread the remainder evenly
+            w[under] += excess / max(1, int(under.sum()))
+        else:
+            w[under] += excess * (w[under] / pool)
+    return w
 
 
 def _run_optimize(req: OptimizeRequest) -> dict[str, Any]:
@@ -179,14 +208,24 @@ def _run_optimize(req: OptimizeRequest) -> dict[str, Any]:
     else:  # sample | ledoit_wolf
         sigma = risk_mod.covariance_matrix(R, req.risk_model)
 
-    # Expected returns (annualized), aligned to the tickers with price history.
+    # Expected returns (annualized), aligned to the tickers with price history. Per ticker:
+    # the trained model where it has a prediction, else an on-the-spot historical mean — so a
+    # partly-covered universe is never silently zeroed (which collapses MVO onto one name).
+    # Low-confidence historical proxy for names the model doesn't cover yet: the annualized
+    # mean, shrunk 50% toward zero and clipped to ±20% so a noisy 2-year momentum mean can't
+    # dominate the book (we're least sure about exactly the names that lack a model forecast).
+    hist_annual = {t: float(np.clip(0.5 * R[:, i].mean() * 252.0, -0.20, 0.20)) for i, t in enumerate(present)}
     if req.alpha_source == "model":
-        er = alpha_signal.expected_returns(req.jurisdiction, present)
-        ann = (alpha_signal.model_meta(req.jurisdiction) or {}).get("annualization", 12.0)
-        mu = np.array([(er.get(t) or 0.0) * ann for t in present], dtype=float)
-        alpha_note = None if any(er.get(t) is not None for t in present) else "no alpha model; used zeros"
+        mu_list, mu_sources = alpha_signal.expected_returns_with_fallback(req.jurisdiction, present, hist_annual)
+        mu = np.array(mu_list, dtype=float)
+        n_fb = mu_sources.count("historical")
+        alpha_note = (
+            f"{n_fb}/{len(present)} names had no trained alpha; used an on-the-spot historical "
+            f"mean return for those (train/retrain the alpha model to cover them)."
+        ) if n_fb else None
     else:
-        mu = R.mean(axis=0) * 252.0
+        mu = np.array([hist_annual[t] for t in present], dtype=float)
+        mu_sources = ["historical"] * len(present)
         alpha_note = None
 
     wb = np.ones(len(present)) / len(present)
@@ -195,11 +234,25 @@ def _run_optimize(req: OptimizeRequest) -> dict[str, Any]:
         risk_free_annual=req.risk_free_annual, lamb=req.lamb, delta=req.delta, b_dev=req.b_dev,
         decomposition=sr.decomposition, wb=wb,
     )
+
+    # Concentration guard: cap per-name weight (backend-agnostic) so a single dominant
+    # expected return can't take the whole book. Skipped when the universe is too small for
+    # the cap to be feasible (N * cap < 1).
+    cap = req.max_weight
+    if cap and 0 < cap < 1 and len(present) * cap >= 1.0 - 1e-9:
+        capped = _apply_weight_cap(np.asarray(sol.weights, dtype=float), cap)
+        if not np.allclose(capped, np.asarray(sol.weights, dtype=float), atol=1e-6):
+            sol.weights = capped
+            sol.expected_return_annual, sol.vol_annual, sol.sharpe = qlib_optimize._summary(
+                capped, mu, sigma, req.risk_free_annual)
+            sol.warnings.append(f"Capped per-name weight at {cap:.0%} to prevent single-name concentration.")
+
     out = sol.to_dict()
     out.update({
         "ok": True,
         "risk_model": req.risk_model,
         "alpha_source": req.alpha_source,
+        "alpha_sources": {t: s for t, s in zip(present, mu_sources)},
         "tickers_dropped": [t for t in req.tickers if t not in present],
         "n_obs": sr.n_obs,
     })
