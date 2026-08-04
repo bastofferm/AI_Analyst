@@ -146,6 +146,7 @@ def train(
     params: dict[str, Any] | None = None,
     valid_frac: float = 0.15,
     test_frac: float = 0.15,
+    min_names_per_date: int = 30,
 ) -> AlphaArtifact:
     """Build the panel, train ``AlphaLGB``, and return a scored artifact.
 
@@ -160,6 +161,7 @@ def train(
     metric_ids = qlib_data.feature_metric_ids(jurisdiction, start=start, end=end, families=families)
     panel = qlib_data.build_panel(
         jurisdiction, start=start, end=end, label=label, metric_ids=metric_ids,
+        min_names_per_date=min_names_per_date,
     )
     if panel.empty:
         raise ValueError(f"empty alpha panel for {jurisdiction} [{start}..{end}]")

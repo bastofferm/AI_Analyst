@@ -30,6 +30,10 @@ logger = logging.getLogger("mzqa.quant.train_all")
 _QUARTER_DAYS = 91
 _DEFAULT_MIN_FIRMS = 150
 _DEFAULT_LABEL = "forward_1m"
+# Thin INTL countries have sparse monthly cross-sections (clustered fiscal-year filings), so
+# the strict 30-names/month training gate starves them of distinct dates. A lower gate lets them
+# train; US/JP keep 30. (Deeper Yahoo history — the acquisition — is the complementary fix.)
+_INTL_MIN_NAMES = 10
 
 
 # --------------------------------------------------------------------------- model set
@@ -166,9 +170,10 @@ def _train_one(model_key: str, label: str, start: str | None, threads: int) -> d
     """Train + persist one model and upsert its ledger rows (runs in its own process)."""
     os.environ.setdefault("OMP_NUM_THREADS", str(threads))
     from api.quant import qlib_alpha
+    min_names = _INTL_MIN_NAMES if model_key.upper().startswith("INTL:") else 30
     try:
         artifact = qlib_alpha.train_and_save(model_key, start=start, label=label,
-                                             params={"num_threads": threads})
+                                             min_names_per_date=min_names, params={"num_threads": threads})
         cross = qlib_alpha.predict_cross_section(artifact)
         rec = _record(model_key, artifact, cross)
         rec["ok"] = True

@@ -698,6 +698,46 @@ def _compute_one(
         if value is not None
     ]
 
+    # ---------------- historical FY rows (prior years' statement-derived metrics)
+    # The cross-sectional alpha model needs multiple annual cross-sections; with only the
+    # latest FY it sees ~1 date and cannot train per country. Yahoo statements already carry
+    # 4-5 years, so emit prior-year FY rows for the STATEMENT-DERIVED metrics (margins, ROE,
+    # ROA, leverage, growth). Price/valuation metrics (P/E, EV/EBITDA, FCF yield, div yield)
+    # are omitted for prior years on purpose: the profile snapshot only has TODAY's price, and
+    # pairing it with an old fiscal year would be wrong. Passing mcap/ev=None drops them.
+    for fy in sorted(statements):
+        if fy >= latest_fy:
+            continue
+        y = statements[fy]
+        p_fy = max((yr for yr in statements if yr < fy), default=None)
+        t_fy = max((yr for yr in statements if yr <= fy - 3), default=None)
+        p = statements.get(p_fy, {}) if p_fy is not None else {}
+        y_rev = y.get("revenue")
+        y_ebitda = y.get("earnings_before_interest_taxes_depreciation_amortization")
+        y_debt = y.get("total_financial_debt")
+        y_net_debt = y.get("net_debt")
+        if y_net_debt is None and y_debt is not None:
+            y_net_debt = y_debt - (y.get("cash_and_cash_equivalents") or 0.0)
+        y_metrics = _derive_shared(
+            rev=y_rev, gross=y.get("gross_profit"), ebit=y.get("earnings_before_interest_taxes"),
+            ebitda=y_ebitda, net_income=y.get("net_income"), fcf=y.get("free_cash_flow"),
+            total_assets=y.get("total_assets"), total_equity=y.get("total_equity"),
+            total_debt=y_debt, net_debt=y_net_debt, mcap_native=None, ev_native=None,
+        )
+        y_metrics["revenue_growth_year_over_year"] = _growth(y_rev, p.get("revenue"))
+        y_metrics["revenue_compound_annual_growth_rate_3_year"] = _cagr(
+            y_rev, statements.get(t_fy, {}).get("revenue") if t_fy is not None else None, 3)
+        y_metrics["free_cash_flow_growth_year_over_year"] = _growth(
+            y.get("free_cash_flow"), p.get("free_cash_flow"))
+        y_metrics["earnings_before_interest_taxes_depreciation_amortization_growth_year_over_year"] = _growth(
+            y_ebitda, p.get("earnings_before_interest_taxes_depreciation_amortization"))
+        y_end = (annual_ends or {}).get(fy) or date(fy, 12, 31)
+        rows.extend(
+            _row(ticker, intl_id, fy, "FY", y_end, mid, val, metric_meta[mid])
+            for mid, val in y_metrics.items()
+            if val is not None and mid in metric_meta
+        )
+
     # ---------------- TTM basis (second row per eligible metric_id)
     # The screener resolves per metric_id, so a partial TTM set is by design: each
     # metric independently takes TTM when available and falls back to FY otherwise.
