@@ -487,6 +487,25 @@ def _derive_shared(
     }
 
 
+_IMPORTANCE_MAP: dict[str, int] | None = None
+
+
+def _importance_for(metric_id: str) -> int | None:
+    """Registry importance for a metric_id (cached). Lets the cross-sectional feature
+    selection (`ic._load_metric_ids`, importance<=2) pick INTL features exactly as US/JP —
+    importance is a global per-metric property, so it comes straight from the registry."""
+    global _IMPORTANCE_MAP
+    if _IMPORTANCE_MAP is None:
+        try:
+            from xbrl_sec.sec.db.connection import connect
+            with connect() as conn, conn.cursor() as cur:
+                cur.execute("SELECT metric_id, importance FROM ref_metric_definitions")
+                _IMPORTANCE_MAP = {str(m): i for m, i in cur.fetchall()}
+        except Exception:  # noqa: BLE001 - degrade to null importance if the registry is unreadable
+            _IMPORTANCE_MAP = {}
+    return _IMPORTANCE_MAP.get(metric_id)
+
+
 def _row(
     ticker: str,
     intl_id: str,
@@ -510,7 +529,7 @@ def _row(
         None,                        # formula (kept null for INTL; source is Yahoo/derived)
         "derived",                   # metric_type
         meta["category"],
-        None,                        # importance
+        _importance_for(metric_id),  # importance (from ref_metric_definitions; enables features)
         meta["unit_type"],
         float(value),
         None,                        # currency (ratios/pcts)

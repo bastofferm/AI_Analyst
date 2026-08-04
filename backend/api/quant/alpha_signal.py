@@ -70,13 +70,90 @@ def prewarm(jurisdictions: Sequence[str] = ("US",)) -> None:
             logger.warning("alpha prewarm failed for %s", j, exc_info=True)
 
 
+_COUNTRY_CACHE: tuple[float, dict[str, str]] | None = None
+
+
+def _ticker_countries() -> dict[str, str]:
+    """{primary_ticker: ISO-2 country} for the INTL universe (cached), so INTL predictions
+    route each name to its country's model."""
+    global _COUNTRY_CACHE
+    now = time.time()
+    if _COUNTRY_CACHE and (now - _COUNTRY_CACHE[0]) < _TTL_SECONDS:
+        return _COUNTRY_CACHE[1]
+    try:
+        from xbrl_sec.sec.db.connection import connect
+        with connect() as conn:
+            df = pd.read_sql(
+                "SELECT primary_ticker, country_code FROM dim_company_intl "
+                "WHERE primary_ticker IS NOT NULL AND country_code IS NOT NULL AND country_code <> ''",
+                conn,
+            )
+        mapping = {str(t): str(c).upper() for t, c in zip(df["primary_ticker"], df["country_code"])}
+    except Exception:  # noqa: BLE001 - never let routing sink a request
+        logger.warning("INTL country map load failed", exc_info=True)
+        mapping = {}
+    _COUNTRY_CACHE = (now, mapping)
+    return mapping
+
+
+def _intl_expected_returns(tickers: Sequence[str]) -> dict[str, float | None]:
+    """Route each INTL ticker to its country model's latest cross-section."""
+    countries = _ticker_countries()
+    out: dict[str, float | None] = {t: None for t in tickers}
+    by_country: dict[str, list[str]] = {}
+    for t in tickers:
+        cc = countries.get(t)
+        if cc:
+            by_country.setdefault(cc, []).append(t)
+    for cc, ts in by_country.items():
+        cross = latest_cross_section(f"INTL:{cc}")
+        if cross.empty:
+            continue
+        idx = cross.index
+        for t in ts:
+            if t in idx:
+                out[t] = float(cross[t])
+    return out
+
+
 def expected_returns(jurisdiction: str, tickers: Sequence[str]) -> dict[str, float | None]:
-    """Monthly expected return per ticker (``None`` where unavailable)."""
+    """Monthly expected return per ticker (``None`` where unavailable).
+
+    INTL routes each name to its country model ("INTL:<cc>"); US/JP use the single market model.
+    """
+    if jurisdiction.upper() == "INTL":
+        return _intl_expected_returns(tickers)
     cross = latest_cross_section(jurisdiction)
     if cross.empty:
         return {t: None for t in tickers}
     idx = cross.index
     return {t: (float(cross[t]) if t in idx else None) for t in tickers}
+
+
+def expected_returns_with_fallback(
+    jurisdiction: str, tickers: Sequence[str], hist_annual: dict[str, float],
+) -> tuple[list[float], list[str]]:
+    """Annualized expected return per ticker: the trained model where it has a prediction,
+    else the caller-supplied on-the-spot historical annualized mean.
+
+    Returns ``(mu, sources)`` aligned to ``tickers`` — ``sources[i]`` is ``"model"`` or
+    ``"historical"``. This keeps a partly-covered universe from being silently zeroed (which
+    collapses a mean-variance optimizer onto the single covered name). Shared by the quant
+    optimizer, the committee node, and the scanner.
+    """
+    er = expected_returns(jurisdiction, tickers)
+    ann = (model_meta(jurisdiction) or {}).get("annualization", 12.0)
+    mu: list[float] = []
+    sources: list[str] = []
+    for t in tickers:
+        v = er.get(t)
+        if v is not None:
+            mu.append(float(v) * ann)
+            sources.append("model")
+        else:
+            mu.append(float(hist_annual.get(t, 0.0)))
+            sources.append("historical")
+    return mu, sources
 
 
 def model_meta(jurisdiction: str = "US") -> dict | None:
@@ -94,6 +171,22 @@ def model_meta(jurisdiction: str = "US") -> dict | None:
         "metrics": art.metrics,
         "n_features": len(art.feature_cols),
     }
+
+
+def list_trained_models() -> list[dict]:
+    """Rows from the quant_alpha_model ledger (US, JP, and per-country INTL). Empty when the
+    ledger is missing or nothing has been trained. Used by /backends and the startup prewarm."""
+    try:
+        from xbrl_sec.sec.db.connection import connect
+        with connect() as conn:
+            df = pd.read_sql(
+                "SELECT model_key, jurisdiction, country_code, label, rank_ic, coverage_count, "
+                "trained_at, next_due FROM quant_alpha_model ORDER BY jurisdiction, country_code NULLS FIRST",
+                conn,
+            )
+        return [{k: (None if pd.isna(v) else v) for k, v in r.items()} for r in df.to_dict("records")]
+    except Exception:  # noqa: BLE001 - ledger optional; never break discovery on it
+        return []
 
 
 def clear_cache() -> None:

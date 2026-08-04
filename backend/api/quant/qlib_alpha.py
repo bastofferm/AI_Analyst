@@ -64,7 +64,9 @@ def _model_dir() -> Path:
 
 
 def _artifact_path(jurisdiction: str) -> Path:
-    return _model_dir() / f"alpha_{jurisdiction.lower()}.dill"
+    # model_key may be "INTL:DE" — colons are illegal in Windows filenames, so use "_".
+    key = jurisdiction.lower().replace(":", "_")
+    return _model_dir() / f"alpha_{key}.dill"
 
 
 def _lgb():  # lazy import so module import stays cheap / side-effect free
@@ -210,15 +212,20 @@ def predict_cross_section(
     artifact: AlphaArtifact,
     *,
     end: date | str | None = None,
-    lookback_months: int = 4,
+    lookback_months: int = 6,
     as_of: pd.Timestamp | None = None,
 ) -> pd.Series:
-    """Expected returns for the latest (or ``as_of``) month, one row per instrument.
+    """Expected returns for each instrument's LATEST available month, one row per instrument.
 
-    Builds a **features-only** panel (``require_label=False``) over a short window with
-    the artifact's exact ``metric_ids``, scores it, and returns the newest cross-section.
-    Features-only is both far cheaper than the training panel and correct here: the
-    current month has no realized forward return, so a label join would drop it.
+    Builds a **features-only** panel (``require_label=False``) over a short window with the
+    artifact's exact ``metric_ids``, scores it, and keeps each instrument's most recent row.
+
+    Point-in-time fundamentals are 90d-lagged and month-aligned, so any single month holds only
+    the names that "refreshed" that month — the *latest* month is the thinnest (e.g. a live US
+    panel had ~3,500 names one month but only ~318 the next). Snapshotting that single month
+    dropped ~90% of the universe (and, notably, most mega-caps). Taking the latest row PER
+    INSTRUMENT — each already cross-sectionally z-scored within its own month, so the score is
+    comparable — recovers the full recent cross-section. ``as_of`` caps the window (no lookahead).
     """
     end = end or date.today()
     start = (pd.Timestamp(end) - pd.DateOffset(months=lookback_months)).date()
@@ -228,10 +235,14 @@ def predict_cross_section(
     )
     if panel.empty:
         return pd.Series(dtype=float)
-    scores = predict(artifact, panel)
-    target = pd.Timestamp(as_of) if as_of is not None else scores.index.get_level_values("datetime").max()
-    cross = scores[scores.index.get_level_values("datetime") == target]
-    return cross.droplevel("datetime").sort_values(ascending=False)
+    scores = predict(artifact, panel).sort_index()
+    if as_of is not None:
+        scores = scores[scores.index.get_level_values("datetime") <= pd.Timestamp(as_of)]
+        if scores.empty:
+            return pd.Series(dtype=float)
+    # Latest available month PER instrument (sorted by datetime, so tail(1) is the newest row).
+    cross = scores.groupby(level="instrument").tail(1).droplevel("datetime")
+    return cross.sort_values(ascending=False)
 
 
 # --------------------------------------------------------------------------- #

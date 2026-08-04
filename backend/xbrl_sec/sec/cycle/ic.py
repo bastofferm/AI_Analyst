@@ -305,10 +305,25 @@ def get_regime_factor_ic_job_status(
     }
 
 
+def _intl_country_tickers(country_code: str) -> list[str]:
+    """Primary tickers for one INTL country. fact_metrics_intl has no country_code column, so
+    per-country scoping of the alpha panel resolves the ticker set from dim_company_intl."""
+    with connect() as conn:
+        df = pd.read_sql(
+            "SELECT DISTINCT primary_ticker FROM dim_company_intl "
+            "WHERE country_code = %s AND primary_ticker IS NOT NULL AND primary_ticker <> ''",
+            conn, params=(country_code.upper(),),
+        )
+    return [str(t) for t in df["primary_ticker"].dropna().tolist()]
+
+
 def _load_monthly_returns(jurisdiction: str, *, start: Any | None = None, end: Any | None = None, forward_months: int = 3) -> pd.DataFrame:
     cfg = get_config(jurisdiction)
     params: list[Any] = []
     filters = ["return IS NOT NULL"]
+    if cfg.country_code:  # INTL per-country: fact_prices_intl has a native country_code column
+        filters.append("country_code = %s")
+        params.append(cfg.country_code)
     if start is not None:
         filters.append("date >= %s")
         params.append(start)
@@ -354,6 +369,9 @@ def _load_metric_ids(
     cfg = get_config(jurisdiction)
     params: list[Any] = []
     filters = ["period_end IS NOT NULL", "value IS NOT NULL", "COALESCE(importance, 9) <= 2"]
+    if cfg.country_code:  # INTL per-country: fact_metrics_intl has no country_code → scope by ticker
+        filters.append("ticker = ANY(%s)")
+        params.append(_intl_country_tickers(cfg.country_code))
     if start is not None:
         filters.append("(date_trunc('month', period_end + INTERVAL '90 days') + INTERVAL '1 month - 1 day')::date >= %s")
         params.append(start)
@@ -386,17 +404,23 @@ def _load_metrics(
 ) -> pd.DataFrame:
     cfg = get_config(jurisdiction)
     params: list[Any] = []
-    filters = []
+    # CTE filters run inside the metric_rows CTE (which appears first in the SQL), so their
+    # params must precede the outer filters' params.
+    cte_filters = ["period_end IS NOT NULL", "value IS NOT NULL", "COALESCE(importance, 9) <= 2"]
+    if cfg.country_code:  # INTL per-country: scope the metric cross-section by ticker
+        cte_filters.append("ticker = ANY(%s)")
+        params.append(_intl_country_tickers(cfg.country_code))
+    outer_filters = []
     if start is not None:
-        filters.append("date >= %s")
+        outer_filters.append("date >= %s")
         params.append(start)
     if end is not None:
-        filters.append("date <= %s")
+        outer_filters.append("date <= %s")
         params.append(end)
     if metric_ids:
-        filters.append("metric_id = ANY(%s)")
+        outer_filters.append("metric_id = ANY(%s)")
         params.append(list(metric_ids))
-    where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+    where_sql = f"WHERE {' AND '.join(outer_filters)}" if outer_filters else ""
     with connect() as conn:
         df = pd.read_sql(
             f"""
@@ -406,9 +430,7 @@ def _load_metrics(
                        metric_id,
                        value::float AS value
                 FROM   {cfg.metrics_table}
-                WHERE  period_end IS NOT NULL
-                  AND  value IS NOT NULL
-                  AND  COALESCE(importance, 9) <= 2
+                WHERE  {' AND '.join(cte_filters)}
             )
             SELECT date, ticker, metric_id, value
             FROM   metric_rows
@@ -419,7 +441,14 @@ def _load_metrics(
         )
     if df.empty:
         return pd.DataFrame()
-    df["date"] = pd.to_datetime(df["date"]).dt.date
+    # errors="coerce" guards against corrupt warehouse period_ends (e.g. a year-6016 date whose
+    # +90d month-end overflows pandas' ns range) — NaT, then dropped. Yahoo-backed INTL data
+    # makes such rows likelier; bounded callers used to avoid it by luck of the date filter.
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"])
+    if df.empty:
+        return pd.DataFrame()
+    df["date"] = df["date"].dt.date
     return df
 
 
