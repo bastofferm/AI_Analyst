@@ -867,15 +867,15 @@ export type QuantBacktestResponse = {
   benchmark?: { available: boolean; label: string };
   curve?: QuantBacktestPoint[];
 };
-export type QuantAlphaRequest = { jurisdiction?: Jurisdiction; tickers?: string[] | null; top?: number };
+export type QuantAlphaRequest = { jurisdiction?: Jurisdiction; tickers?: string[] | null; top?: number; label?: string };
 export type QuantRiskRequest = { jurisdiction?: Jurisdiction; tickers: string[]; lookback_months?: number; num_factors?: number };
 export type QuantOptimizeRequest = {
   jurisdiction?: Jurisdiction; tickers: string[]; optimizer?: string; risk_model?: string;
-  alpha_source?: string; lookback_months?: number; num_factors?: number;
+  alpha_source?: string; label?: string; lookback_months?: number; num_factors?: number;
   lamb?: number | null; delta?: number; b_dev?: number; risk_free_annual?: number;
 };
 export type QuantBacktestRequest = {
-  jurisdiction?: Jurisdiction; start?: string | null; end?: string | null; topk?: number; long_short?: boolean;
+  jurisdiction?: Jurisdiction; start?: string | null; end?: string | null; topk?: number; long_short?: boolean; label?: string;
 };
 
 export type ScreenerMarketsPrimary = { jurisdiction: "US" | "JP"; label: string; count: number };

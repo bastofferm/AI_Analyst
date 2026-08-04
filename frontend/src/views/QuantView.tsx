@@ -43,6 +43,11 @@ const RISK_LABELS: Record<string, string> = {
 const BETA_LABELS: Record<string, string> = {
   mkt_rf: "Mkt", smb: "SMB", hml: "HML", rmw: "RMW", cma: "CMA", mom: "Mom",
 };
+// Forward-return horizons the alpha model is trained on. The value is the backend `label`.
+const HORIZON_LABELS: Record<string, string> = {
+  forward_1m: "1-month", forward_3m: "3-month", forward_6m: "6-month", forward_12m: "12-month",
+};
+const horizonShort = (label: string) => label.replace("forward_", "");
 
 const pctFmt = (x: number | null | undefined, d = 1) =>
   x === null || x === undefined || Number.isNaN(x) ? "—" : `${(x * 100).toFixed(d)}%`;
@@ -57,6 +62,7 @@ export function QuantView() {
   const [optimizer, setOptimizer] = useState("qlib_mvo");
   const [riskModel, setRiskModel] = useState("qlib_structured");
   const [alphaSource, setAlphaSource] = useState("model");
+  const [horizon, setHorizon] = useState("forward_1m");
 
   const [optStatus, setOptStatus] = useState<Status>("idle");
   const [opt, setOpt] = useState<QuantOptimizeResponse | null>(null);
@@ -82,10 +88,11 @@ export function QuantView() {
       .finally(() => setBackendsLoaded(true));
   }, []);
   useEffect(() => {
-    api.quantAlpha({ jurisdiction, top: 12 }).then(setAlpha).catch(() => setAlpha(null));
-  }, [jurisdiction]);
+    api.quantAlpha({ jurisdiction, top: 12, label: horizon }).then(setAlpha).catch(() => setAlpha(null));
+  }, [jurisdiction, horizon]);
 
-  const model = backends?.alpha_models?.[jurisdiction];
+  // Prefer the fetched alpha's model meta (reflects the selected horizon); fall back to /backends.
+  const model = alpha?.model ?? backends?.alpha_models?.[jurisdiction];
 
   function changeMarket(j: Jurisdiction) {
     setJurisdiction(j);
@@ -100,7 +107,7 @@ export function QuantView() {
     setOptErr("");
     try {
       setOpt(await api.quantOptimize({
-        jurisdiction, tickers, optimizer, risk_model: riskModel, alpha_source: alphaSource,
+        jurisdiction, tickers, optimizer, risk_model: riskModel, alpha_source: alphaSource, label: horizon,
       }));
       setOptStatus("done");
     } catch (e) {
@@ -116,7 +123,7 @@ export function QuantView() {
     setBtStatus("running");
     setBtErr("");
     try {
-      const res = await api.quantBacktest({ jurisdiction, topk, long_short: longShort });
+      const res = await api.quantBacktest({ jurisdiction, topk, long_short: longShort, label: horizon });
       setBt(res);
       setBtStatus(res.available ? "done" : "error");
       if (!res.available) setBtErr(res.reason || "backtest unavailable");
@@ -179,6 +186,13 @@ export function QuantView() {
             <select className={selCls} value={alphaSource} onChange={(e) => setAlphaSource(e.target.value)}>
               <option value="model">qlib alpha model</option>
               <option value="historical">historical mean</option>
+            </select>
+          </Field>
+          <Field label="Horizon">
+            <select className={selCls} value={horizon} onChange={(e) => setHorizon(e.target.value)}>
+              {Object.entries(HORIZON_LABELS).map(([v, lbl]) => (
+                <option key={v} value={v}>{lbl}</option>
+              ))}
             </select>
           </Field>
           <button
@@ -332,7 +346,7 @@ export function QuantView() {
               <thead>
                 <tr className="border-b border-border text-left text-muted">
                   <th className="py-1.5 pr-3">Ticker</th>
-                  <th className="py-1.5 pr-3 text-right">Monthly</th>
+                  <th className="py-1.5 pr-3 text-right">{horizonShort(horizon)} return</th>
                   <th className="py-1.5 text-right">Annualized</th>
                 </tr>
               </thead>

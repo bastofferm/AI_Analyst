@@ -273,13 +273,14 @@ class BacktestRequest(BaseModel):
     end: str | None = None
     topk: int = Field(default=30, ge=5, le=200)
     long_short: bool = False
+    label: str = "forward_1m"          # alpha horizon to backtest: forward_1m|3m|6m|12m
 
 
 @router.post("/backtest")
 async def backtest(req: BacktestRequest) -> dict[str, Any]:
-    art = await _in_thread(qlib_alpha.get_model, req.jurisdiction)
+    art = await _in_thread(qlib_alpha.get_model, req.jurisdiction, req.label)
     if art is None:
-        raise HTTPException(404, f"no trained alpha model for {req.jurisdiction}; train one first")
+        raise HTTPException(404, f"no trained {req.label} alpha model for {req.jurisdiction}; train one first")
     return await _in_thread(
         qlib_backtest.backtest_alpha, art,
         start=req.start, end=req.end, topk=req.topk, long_short=req.long_short,
