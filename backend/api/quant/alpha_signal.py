@@ -31,32 +31,33 @@ _CACHE: dict[str, tuple[float, pd.Series]] = {}
 _LOCK = threading.Lock()
 
 
-def latest_cross_section(jurisdiction: str = "US", *, ttl: float | None = None) -> pd.Series:
+def latest_cross_section(jurisdiction: str = "US", *, label: str = "forward_1m", ttl: float | None = None) -> pd.Series:
     """Expected forward returns (one row per instrument) for the latest month.
 
-    Cached per jurisdiction for ``ttl`` seconds. Empty Series if no model exists or the
-    warehouse yields no recent panel.
+    Cached per (jurisdiction, horizon label) for ``ttl`` seconds. Empty Series if no model
+    exists for that horizon or the warehouse yields no recent panel.
     """
     juris = jurisdiction.upper()
     ttl = _TTL_SECONDS if ttl is None else ttl
-    hit = _CACHE.get(juris)
+    ckey = f"{juris}|{label}"
+    hit = _CACHE.get(ckey)
     if hit and (time.time() - hit[0]) < ttl:
         return hit[1]
 
     with _LOCK:
-        hit = _CACHE.get(juris)  # re-check: another thread may have just built it
+        hit = _CACHE.get(ckey)  # re-check: another thread may have just built it
         if hit and (time.time() - hit[0]) < ttl:
             return hit[1]
-        art = qlib_alpha.get_model(juris)
+        art = qlib_alpha.get_model(juris, label)
         if art is None:
             series = pd.Series(dtype=float)
         else:
             try:
                 series = qlib_alpha.predict_cross_section(art)
             except Exception:  # noqa: BLE001 - never let scoring/committee fail on this
-                logger.warning("alpha cross-section failed for %s", juris, exc_info=True)
+                logger.warning("alpha cross-section failed for %s %s", juris, label, exc_info=True)
                 series = pd.Series(dtype=float)
-        _CACHE[juris] = (time.time(), series)
+        _CACHE[ckey] = (time.time(), series)
         return series
 
 
@@ -96,8 +97,8 @@ def _ticker_countries() -> dict[str, str]:
     return mapping
 
 
-def _intl_expected_returns(tickers: Sequence[str]) -> dict[str, float | None]:
-    """Route each INTL ticker to its country model's latest cross-section."""
+def _intl_expected_returns(tickers: Sequence[str], *, label: str = "forward_1m") -> dict[str, float | None]:
+    """Route each INTL ticker to its country model's latest cross-section (for this horizon)."""
     countries = _ticker_countries()
     out: dict[str, float | None] = {t: None for t in tickers}
     by_country: dict[str, list[str]] = {}
@@ -106,7 +107,7 @@ def _intl_expected_returns(tickers: Sequence[str]) -> dict[str, float | None]:
         if cc:
             by_country.setdefault(cc, []).append(t)
     for cc, ts in by_country.items():
-        cross = latest_cross_section(f"INTL:{cc}")
+        cross = latest_cross_section(f"INTL:{cc}", label=label)
         if cross.empty:
             continue
         idx = cross.index
@@ -116,14 +117,15 @@ def _intl_expected_returns(tickers: Sequence[str]) -> dict[str, float | None]:
     return out
 
 
-def expected_returns(jurisdiction: str, tickers: Sequence[str]) -> dict[str, float | None]:
-    """Monthly expected return per ticker (``None`` where unavailable).
+def expected_returns(jurisdiction: str, tickers: Sequence[str], *, label: str = "forward_1m") -> dict[str, float | None]:
+    """Per-period expected return per ticker for the given horizon (``None`` where unavailable).
 
     INTL routes each name to its country model ("INTL:<cc>"); US/JP use the single market model.
+    The value is over the horizon's period (monthly for forward_1m); annualize via `annualization`.
     """
     if jurisdiction.upper() == "INTL":
-        return _intl_expected_returns(tickers)
-    cross = latest_cross_section(jurisdiction)
+        return _intl_expected_returns(tickers, label=label)
+    cross = latest_cross_section(jurisdiction, label=label)
     if cross.empty:
         return {t: None for t in tickers}
     idx = cross.index
@@ -131,18 +133,18 @@ def expected_returns(jurisdiction: str, tickers: Sequence[str]) -> dict[str, flo
 
 
 def expected_returns_with_fallback(
-    jurisdiction: str, tickers: Sequence[str], hist_annual: dict[str, float],
+    jurisdiction: str, tickers: Sequence[str], hist_annual: dict[str, float], *, label: str = "forward_1m",
 ) -> tuple[list[float], list[str]]:
-    """Annualized expected return per ticker: the trained model where it has a prediction,
-    else the caller-supplied on-the-spot historical annualized mean.
+    """Annualized expected return per ticker: the trained model (for this horizon) where it has a
+    prediction, else the caller-supplied on-the-spot historical annualized mean.
 
     Returns ``(mu, sources)`` aligned to ``tickers`` — ``sources[i]`` is ``"model"`` or
     ``"historical"``. This keeps a partly-covered universe from being silently zeroed (which
     collapses a mean-variance optimizer onto the single covered name). Shared by the quant
     optimizer, the committee node, and the scanner.
     """
-    er = expected_returns(jurisdiction, tickers)
-    ann = (model_meta(jurisdiction) or {}).get("annualization", 12.0)
+    er = expected_returns(jurisdiction, tickers, label=label)
+    ann = (model_meta(jurisdiction, label) or {}).get("annualization", 12.0)
     mu: list[float] = []
     sources: list[str] = []
     for t in tickers:
@@ -156,9 +158,9 @@ def expected_returns_with_fallback(
     return mu, sources
 
 
-def model_meta(jurisdiction: str = "US") -> dict | None:
+def model_meta(jurisdiction: str = "US", label: str = "forward_1m") -> dict | None:
     """Metadata for the persisted model (trained_at, horizon, IC), or ``None``."""
-    art = qlib_alpha.get_model(jurisdiction)
+    art = qlib_alpha.get_model(jurisdiction, label)
     if art is None:
         return None
     return {

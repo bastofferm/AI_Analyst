@@ -27,7 +27,9 @@ import pandas as pd
 DEFAULT_FAMILIES: tuple[str, ...] = ("value", "quality", "growth", "market_factor")
 
 # Supported forward-return label horizons (columns produced by _load_monthly_returns).
-LABEL_HORIZONS: tuple[str, ...] = ("forward_1m", "forward_3m")
+LABEL_HORIZONS: tuple[str, ...] = ("forward_1m", "forward_3m", "forward_6m", "forward_12m")
+# Horizon → number of forward months compounded for the label.
+HORIZON_MONTHS: dict[str, int] = {"forward_1m": 1, "forward_3m": 3, "forward_6m": 6, "forward_12m": 12}
 
 FEATURE = "feature"
 LABEL = "label"
@@ -122,7 +124,7 @@ def build_panel(
 
     if require_label:
         # --- label: forward return aligned on the same month-end ---
-        forward_months = 3 if label == "forward_3m" else 1
+        forward_months = HORIZON_MONTHS.get(label, 1)
         returns = _load_monthly_returns(jurisdiction, start=start, end=end, forward_months=forward_months)
         if returns.empty:
             return pd.DataFrame()

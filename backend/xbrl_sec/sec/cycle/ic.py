@@ -351,11 +351,16 @@ def _load_monthly_returns(jurisdiction: str, *, start: Any | None = None, end: A
         .reset_index(name="ret_1m")
         .sort_values(["ticker", "month"])
     )
-    monthly["forward_1m"] = monthly.groupby("ticker")["ret_1m"].shift(-1)
-    monthly["forward_3m"] = (
-        monthly.groupby("ticker")["ret_1m"]
-        .transform(lambda s: (1.0 + s.shift(-1)) * (1.0 + s.shift(-2)) * (1.0 + s.shift(-3)) - 1.0)
-    )
+    # Forward compounded returns per horizon. forward_Nm at month t = prod_{k=1..N}(1+ret_{t+k})-1,
+    # NaN if any of the N future months is missing (same all-or-nothing semantics for every horizon).
+    g = monthly.groupby("ticker")["ret_1m"]
+    monthly["forward_1m"] = g.shift(-1)
+    for n in (3, 6, 12):
+        prod = None
+        for k in range(1, n + 1):
+            term = 1.0 + g.shift(-k)
+            prod = term if prod is None else prod * term
+        monthly[f"forward_{n}m"] = prod - 1.0
     return monthly.rename(columns={"month": "date"})
 
 

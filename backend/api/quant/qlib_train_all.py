@@ -61,15 +61,16 @@ def all_model_keys(min_firms: int) -> list[str]:
     return ["US", "JP", *(f"INTL:{cc}" for cc in intl_countries(min_firms))]
 
 
-def _due_model_keys(candidates: list[str]) -> list[str]:
-    """Subset of ``candidates`` whose ledger next_due has passed (or that were never trained)."""
+def _due_jobs(jobs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Subset of (model_key, label) jobs whose ledger next_due has passed (or never trained)."""
     from xbrl_sec.sec.db.connection import connect
     with connect() as conn, conn.cursor() as cur:
         _ensure_tables(cur)
-        cur.execute("SELECT model_key, next_due FROM quant_alpha_model")
-        due_by = {str(k): d for k, d in cur.fetchall()}
+        cur.execute("SELECT model_key, label, next_due FROM quant_alpha_model")
+        due_by = {(str(k), str(lbl)): d for k, lbl, d in cur.fetchall()}
     today = date.today()
-    return [m for m in candidates if (due_by.get(m) is None or due_by[m] is None or due_by[m] <= today)]
+    return [(mk, lbl) for (mk, lbl) in jobs
+            if (due_by.get((mk, lbl)) is None or due_by[(mk, lbl)] is None or due_by[(mk, lbl)] <= today)]
 
 
 # --------------------------------------------------------------------------- ledger DDL + upserts
@@ -78,11 +79,12 @@ def _ensure_tables(cur) -> None:
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS quant_alpha_model (
-            model_key TEXT PRIMARY KEY, jurisdiction TEXT NOT NULL, country_code TEXT,
+            model_key TEXT NOT NULL, jurisdiction TEXT NOT NULL, country_code TEXT,
             label TEXT NOT NULL, version TEXT NOT NULL, trained_at TIMESTAMPTZ NOT NULL,
             train_start DATE, train_end DATE, rank_ic DOUBLE PRECISION, n_train_names INTEGER,
             coverage_count INTEGER, status TEXT NOT NULL DEFAULT 'trained', next_due DATE,
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), diagnostics_json JSONB NOT NULL DEFAULT '{}'::jsonb
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), diagnostics_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            PRIMARY KEY (model_key, label)
         )
         """
     )
@@ -90,9 +92,10 @@ def _ensure_tables(cur) -> None:
         """
         CREATE TABLE IF NOT EXISTS quant_alpha_coverage (
             jurisdiction TEXT NOT NULL, ticker TEXT NOT NULL, model_key TEXT NOT NULL,
-            country_code TEXT, last_as_of DATE, expected_return DOUBLE PRECISION,
-            covered BOOLEAN NOT NULL DEFAULT TRUE, last_trained_at TIMESTAMPTZ, next_due DATE,
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (jurisdiction, ticker)
+            label TEXT NOT NULL DEFAULT 'forward_1m', country_code TEXT, last_as_of DATE,
+            expected_return DOUBLE PRECISION, covered BOOLEAN NOT NULL DEFAULT TRUE,
+            last_trained_at TIMESTAMPTZ, next_due DATE, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (jurisdiction, ticker, label)
         )
         """
     )
@@ -117,15 +120,15 @@ def _record(model_key: str, artifact: Any, cross) -> dict[str, Any]:
         return v if (v is None or (isinstance(v, (int, float)) and math.isfinite(v))) else None
 
     jurisdiction, country = _split_key(model_key)
+    label = artifact.label
     trained_at = datetime.now(timezone.utc)
     next_due = (trained_at.date() + timedelta(days=_QUARTER_DAYS))
     clean_metrics = {k: _fin(v) for k, v in (artifact.metrics or {}).items()}
     rank_ic = _fin(clean_metrics.get("rank_ic_mean"))
     ts, te = (artifact.train_range or (None, None))
-    as_of = None
     rows = []
     for ticker, er in cross.items():
-        rows.append((jurisdiction, str(ticker), model_key, country, None, float(er),
+        rows.append((jurisdiction, str(ticker), model_key, label, country, None, float(er),
                      True, trained_at, next_due))
 
     with connect() as conn, conn.cursor() as cur:
@@ -136,7 +139,7 @@ def _record(model_key: str, artifact: Any, cross) -> dict[str, Any]:
                 trained_at, train_start, train_end, rank_ic, n_train_names, coverage_count,
                 status, next_due, updated_at, diagnostics_json)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'trained',%s, now(), %s)
-            ON CONFLICT (model_key) DO UPDATE SET
+            ON CONFLICT (model_key, label) DO UPDATE SET
                 jurisdiction=EXCLUDED.jurisdiction, country_code=EXCLUDED.country_code,
                 label=EXCLUDED.label, version=EXCLUDED.version, trained_at=EXCLUDED.trained_at,
                 train_start=EXCLUDED.train_start, train_end=EXCLUDED.train_end, rank_ic=EXCLUDED.rank_ic,
@@ -151,10 +154,10 @@ def _record(model_key: str, artifact: Any, cross) -> dict[str, Any]:
             execute_values(
                 cur,
                 """
-                INSERT INTO quant_alpha_coverage (jurisdiction, ticker, model_key, country_code,
+                INSERT INTO quant_alpha_coverage (jurisdiction, ticker, model_key, label, country_code,
                     last_as_of, expected_return, covered, last_trained_at, next_due)
                 VALUES %s
-                ON CONFLICT (jurisdiction, ticker) DO UPDATE SET
+                ON CONFLICT (jurisdiction, ticker, label) DO UPDATE SET
                     model_key=EXCLUDED.model_key, country_code=EXCLUDED.country_code,
                     expected_return=EXCLUDED.expected_return, covered=EXCLUDED.covered,
                     last_trained_at=EXCLUDED.last_trained_at, next_due=EXCLUDED.next_due, updated_at=now()
@@ -162,7 +165,7 @@ def _record(model_key: str, artifact: Any, cross) -> dict[str, Any]:
                 rows,
             )
         conn.commit()
-    return {"model_key": model_key, "rank_ic": rank_ic, "coverage": len(cross)}
+    return {"model_key": model_key, "label": label, "rank_ic": rank_ic, "coverage": len(cross)}
 
 
 # --------------------------------------------------------------------------- worker
@@ -186,44 +189,52 @@ def _train_one(model_key: str, label: str, start: str | None, threads: int) -> d
 # --------------------------------------------------------------------------- CLI
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    p = argparse.ArgumentParser(description="train all alpha models in parallel + update the ledger")
+    from api.quant.qlib_data import LABEL_HORIZONS
+
+    p = argparse.ArgumentParser(description="train all alpha models (markets x horizons) in parallel + update the ledger")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--all", action="store_true", help="US + JP + every INTL country >= --min-firms (default)")
     g.add_argument("--due", action="store_true", help="only models past their quarterly next_due")
     g.add_argument("--models", type=str, default=None, help="explicit comma-separated keys, e.g. US,INTL:DE")
     p.add_argument("--min-firms", type=int, default=_DEFAULT_MIN_FIRMS)
-    p.add_argument("--label", default=_DEFAULT_LABEL, choices=("forward_1m", "forward_3m"))
+    p.add_argument("--horizons", default=",".join(LABEL_HORIZONS),
+                   help=f"comma-separated forward-return horizons; choose from {','.join(LABEL_HORIZONS)} (default: all)")
     p.add_argument("--start", default=None, help="panel start (default: ~8y back)")
-    p.add_argument("--jobs", type=int, default=0, help="parallel processes (0 = min(#models, cpu))")
+    p.add_argument("--jobs", type=int, default=0, help="parallel processes (0 = min(#jobs, cpu))")
     args = p.parse_args(argv)
 
     if args.models:
         models = [m.strip().upper() for m in args.models.split(",") if m.strip()]
     else:
         models = all_model_keys(args.min_firms)
-        if args.due:
-            models = _due_model_keys(models)
-    if not models:
-        print("nothing to train (all models up to date).")
+    horizons = [h.strip() for h in args.horizons.split(",") if h.strip() in LABEL_HORIZONS]
+    if not horizons:
+        print(f"no valid horizons in {args.horizons!r}; choose from {LABEL_HORIZONS}")
+        return 2
+    jobs = [(mk, lbl) for mk in models for lbl in horizons]
+    if args.due:
+        jobs = _due_jobs(jobs)
+    if not jobs:
+        print("nothing to train (all up to date).")
         return 0
 
     start = args.start or (date.today() - timedelta(days=365 * 8)).isoformat()
     cpu = os.cpu_count() or 4
-    n_workers = args.jobs or min(len(models), cpu)
+    n_workers = args.jobs or min(len(jobs), cpu)
     threads = max(1, cpu // max(1, n_workers))
-    print(f"training {len(models)} model(s) on {n_workers} workers x {threads} threads "
-          f"(cpu={cpu}): {', '.join(models)}")
+    print(f"training {len(jobs)} model(s) [{len(models)} markets x {len(horizons)} horizons] "
+          f"on {n_workers} workers x {threads} threads (cpu={cpu})")
 
     results: list[dict[str, Any]] = []
     with ProcessPoolExecutor(max_workers=n_workers) as ex:
-        futures = {ex.submit(_train_one, m, args.label, start, threads): m for m in models}
+        futures = {ex.submit(_train_one, mk, lbl, start, threads): (mk, lbl) for (mk, lbl) in jobs}
         for fut in as_completed(futures):
             r = fut.result()
             results.append(r)
             tag = "ok" if r.get("ok") else "FAIL"
             extra = (f"rank_ic={r.get('rank_ic'):.3f} coverage={r.get('coverage')}"
                      if r.get("ok") and r.get("rank_ic") is not None else r.get("error", ""))
-            print(f"  [{tag}] {r['model_key']}: {extra}")
+            print(f"  [{tag}] {r['model_key']} {r.get('label', '')}: {extra}")
 
     ok = sum(1 for r in results if r.get("ok"))
     print(f"done: {ok}/{len(results)} trained; ledger updated (quant_alpha_model / quant_alpha_coverage).")

@@ -70,6 +70,7 @@ class AlphaRequest(BaseModel):
     jurisdiction: str = "US"
     tickers: list[str] | None = None       # None -> the model's latest full cross-section
     top: int = Field(default=25, ge=1, le=500)
+    label: str = "forward_1m"              # forward-return horizon: forward_1m|3m|6m|12m
 
 
 @router.post("/alpha")
@@ -78,20 +79,20 @@ async def alpha(req: AlphaRequest) -> dict[str, Any]:
 
 
 def _run_alpha(req: AlphaRequest) -> dict[str, Any]:
-    meta = alpha_signal.model_meta(req.jurisdiction)
+    meta = alpha_signal.model_meta(req.jurisdiction, req.label)
     if meta is None:
         return {"available": False, "model": None, "rows": [],
-                "note": f"no trained alpha model for {req.jurisdiction}"}
+                "note": f"no trained {req.label} alpha model for {req.jurisdiction}"}
     ann = meta["annualization"]
     if req.tickers:
-        er = alpha_signal.expected_returns(req.jurisdiction, req.tickers)
+        er = alpha_signal.expected_returns(req.jurisdiction, req.tickers, label=req.label)
         rows = [
             {"ticker": t, "expected_return_monthly": v,
              "expected_return_annual": (v * ann) if v is not None else None}
             for t, v in er.items()
         ]
     else:
-        cross = alpha_signal.latest_cross_section(req.jurisdiction)
+        cross = alpha_signal.latest_cross_section(req.jurisdiction, label=req.label)
         rows = [
             {"ticker": t, "expected_return_monthly": float(v), "expected_return_annual": float(v) * ann}
             for t, v in cross.head(req.top).items()
@@ -148,6 +149,7 @@ class OptimizeRequest(BaseModel):
     optimizer: str = "qlib_mvo"            # any of qlib_optimize.BACKENDS
     risk_model: str = "qlib_structured"    # any of RISK_MODELS
     alpha_source: str = "model"            # "model" | "historical"
+    label: str = "forward_1m"              # alpha horizon: forward_1m|3m|6m|12m (model source)
     lookback_months: int = Field(default=24, ge=6, le=120)
     num_factors: int = Field(default=10, ge=1, le=30)
     lamb: float | None = None
@@ -216,7 +218,8 @@ def _run_optimize(req: OptimizeRequest) -> dict[str, Any]:
     # dominate the book (we're least sure about exactly the names that lack a model forecast).
     hist_annual = {t: float(np.clip(0.5 * R[:, i].mean() * 252.0, -0.20, 0.20)) for i, t in enumerate(present)}
     if req.alpha_source == "model":
-        mu_list, mu_sources = alpha_signal.expected_returns_with_fallback(req.jurisdiction, present, hist_annual)
+        mu_list, mu_sources = alpha_signal.expected_returns_with_fallback(
+            req.jurisdiction, present, hist_annual, label=req.label)
         mu = np.array(mu_list, dtype=float)
         n_fb = mu_sources.count("historical")
         alpha_note = (

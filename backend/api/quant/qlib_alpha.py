@@ -63,10 +63,13 @@ def _model_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "output" / "quant_models"
 
 
-def _artifact_path(jurisdiction: str) -> Path:
+def _artifact_path(jurisdiction: str, label: str = "forward_1m") -> Path:
     # model_key may be "INTL:DE" — colons are illegal in Windows filenames, so use "_".
     key = jurisdiction.lower().replace(":", "_")
-    return _model_dir() / f"alpha_{key}.dill"
+    # forward_1m keeps the legacy unlabeled path (the app default + existing artifacts); longer
+    # horizons get a labeled file so the four horizons per market coexist instead of overwriting.
+    suffix = "" if label == "forward_1m" else f"_{label}"
+    return _model_dir() / f"alpha_{key}{suffix}.dill"
 
 
 def _lgb():  # lazy import so module import stays cheap / side-effect free
@@ -112,7 +115,10 @@ class AlphaArtifact:
 
     @property
     def horizon_months(self) -> int:
-        return 3 if self.label == "forward_3m" else 1
+        try:
+            return int(self.label.split("_")[1].rstrip("m"))  # forward_6m -> 6, forward_12m -> 12
+        except (IndexError, ValueError):
+            return 1
 
     @property
     def annualization(self) -> float:
@@ -253,7 +259,7 @@ def predict_cross_section(
 def save(artifact: AlphaArtifact, path: Path | None = None) -> Path:
     import dill
 
-    path = path or _artifact_path(artifact.jurisdiction)
+    path = path or _artifact_path(artifact.jurisdiction, artifact.label)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as fh:
         dill.dump(artifact, fh)
@@ -271,21 +277,22 @@ def load(path: Path) -> AlphaArtifact:
 _CACHE: dict[str, tuple[float, AlphaArtifact]] = {}
 
 
-def get_model(jurisdiction: str = "US") -> AlphaArtifact | None:
-    """Load the persisted artifact for ``jurisdiction`` (cached; hot-reloaded on mtime).
+def get_model(jurisdiction: str = "US", label: str = "forward_1m") -> AlphaArtifact | None:
+    """Load the persisted artifact for ``(jurisdiction, label)`` (cached; hot-reloaded on mtime).
 
     Returns ``None`` if no artifact exists yet — callers must degrade gracefully so the
     app runs before any model is trained.
     """
-    path = _artifact_path(jurisdiction)
+    path = _artifact_path(jurisdiction, label)
     if not path.exists():
         return None
     mtime = path.stat().st_mtime
-    cached = _CACHE.get(jurisdiction.upper())
+    ckey = f"{jurisdiction.upper()}|{label}"
+    cached = _CACHE.get(ckey)
     if cached and cached[0] == mtime:
         return cached[1]
     artifact = load(path)
-    _CACHE[jurisdiction.upper()] = (mtime, artifact)
+    _CACHE[ckey] = (mtime, artifact)
     return artifact
 
 
