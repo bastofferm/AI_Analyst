@@ -1,0 +1,788 @@
+\documentclass[11pt]{article}
+\usepackage{mzqastyle}
+\setrunningtitle{AI Analyst — Quantitative \& ML Models}
+
+\begin{document}
+
+\mzqatitlepage
+  {Quantitative \& Machine-Learning Modeling Reference}
+  {Quantitative \& Machine-Learning Models}
+  {The complete mathematical specification}
+  {This volume is the exhaustive mathematical reference for every quantitative and
+   machine-learning model in AI Analyst. It specifies the cross-sectional
+   gradient-boosted alpha model, the factor-structured risk models, the dual
+   portfolio optimizers, the walk-forward out-of-sample backtest with
+   Fama--French benchmarking, the rolling robust factor regression, the
+   macro-cycle regime models (PCA/DFM, Gaussian HMM, temporal multimodal VAE, and
+   regime-conditioned factor IC), and the deterministic valuation and scoring
+   models --- each with its objective, estimator, algorithm, and the exact
+   warehouse tables and code paths it runs on.
+
+   \vspace{8pt}
+   \textit{Companion volumes:} \emph{System Architecture \& Operations},
+   \emph{qlib Integration}, and \emph{SEC \& EDINET Metrics Mapping \&
+   Reconciliation}.}
+  {Modeling Reference \quad·\quad Generated 31 July 2026 \quad·\quad Independent research, not investment advice.}
+
+\mzqatoc
+\clearpage
+
+%======================================================================
+\part*{Part I\quad Foundations}
+\addcontentsline{toc}{section}{Part I\quad Foundations}
+
+\section{Scope and notation}
+
+AI Analyst answers two different questions with two different families of model.
+The \emph{valuation} models (Part IV) answer \emph{``what is this business worth?''}
+deterministically, from projected cash flows and a cost of capital. The
+\emph{quantitative} models (Parts II--III) answer \emph{``what should I expect from
+this stock, and how should I size it?''} statistically, from a learned
+cross-sectional return forecast, a forward covariance, and a portfolio optimizer,
+conditioned on an estimated macro regime. This document is the mathematical
+specification of both families.
+
+\begin{specbox}
+\tabhead{Notation.}\; $\wv\in\R^N$ portfolio weights; $\muv\in\R^N$ expected
+(annualized) returns; $\Sigma\in\R^{N\times N}$ return covariance; $r_f$ the
+risk-free rate; $\ones$ the ones vector; $\odot$ the elementwise (Hadamard)
+product; $z$ a cross-sectional $z$-score. Time subscripts $t$ index months unless
+stated otherwise. Annualization uses $252$ trading days for daily series and $12$
+for monthly series. A ``\,hat\,'' ($\hat{\,\cdot\,}$) denotes an estimate or a
+model prediction.
+\end{specbox}
+
+Every model is designed to \emph{degrade gracefully}: if a trained artifact,
+an optional dependency (\code{hmmlearn}, PyTorch, a MIP solver), or a warehouse
+table is absent, the code returns a defined fallback rather than failing, so the
+application always runs. Those fallbacks are stated with each model.
+
+\section{The data substrate: a point-in-time fundamentals panel}
+\label{sec:panel}
+
+Every cross-sectional model consumes the same object: a monthly panel of
+standardized fundamentals aligned \emph{point-in-time} (PIT) so that no signal
+ever uses data that was not yet public.
+
+\subsection{Point-in-time alignment}
+A fundamental value with fiscal-period end $p$ is stamped usable only at
+\begin{equation}
+  \tau(p) \;=\; \operatorname{monthend}\!\big(p + 90\text{ days}\big),
+\end{equation}
+a conservative proxy for the filing lag. In SQL the alignment is
+\code{(date\_trunc('month', period\_end + INTERVAL '90 days') + INTERVAL '1 month - 1 day')}.
+The alpha model (\S\ref{sec:alpha}) and the regime-IC engine (\S\ref{sec:regic})
+share this one loader, so the research signal and the production forecast see an
+identical, lookahead-safe history.
+
+\subsection{Feature families and cross-sectional standardization}
+Features are importance-ranked standardized fundamentals
+(\code{fact\_metrics\_\{us,jp\}}, keeping \code{importance}\,$\le 2$) drawn from
+four families:
+
+\begin{center}\small
+\begin{tabular}{@{}>{\bfseries\color{navy}}l p{10.8cm}@{}}
+\toprule
+\tabhead{Family} & \tabhead{Representative factors (substring patterns)} \\
+\midrule
+value           & book-to-market, earnings yield, FCF yield, dividend, EV/\,$\cdot$, valuation multiples \\
+quality         & return-on-\,$\cdot$, ROE/ROA, margins, accruals, cash conversion, asset turnover \\
+growth          & revenue/earnings growth, investment, capex, R\&D, sales change \\
+market\_factor  & market beta, volatility, momentum, residual/abnormal return \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+For each factor $j$, name $i$, and month $t$, the raw value $x^{(j)}_{i,t}$ is
+\emph{cross-sectionally} standardized and winsorized (mirroring qlib's
+\code{CSZScoreNorm}):
+\begin{equation}
+  z^{(j)}_{i,t} \;=\; \clip\!\left(
+    \frac{x^{(j)}_{i,t}-\bar\mu^{(j)}_t}{\hat\sigma^{(j)}_t},\,-3,\,3\right),
+  \qquad
+  \bar\mu^{(j)}_t=\frac1{N_t}\sum_{i} x^{(j)}_{i,t},\quad
+  \hat\sigma^{(j)}_t=\Std_i\, x^{(j)}_{i,t}.
+\end{equation}
+Standardizing within each date makes factors comparable across names and dates
+and robust to per-metric scale; a zero-variance cross-section maps to $0$
+(the neutral value). A missing feature is imputed to the cross-sectional mean,
+i.e.\ $z=0$.
+
+\subsection{Label}
+The supervised label is the forward one-month (or three-month) total return,
+\begin{equation}
+  y_{i,t} \;=\; r_{i,\,t\to t+h}, \qquad h\in\{1,3\}\ \text{months}.
+\end{equation}
+The panel is built as a qlib MultiIndex frame --- rows $(\text{datetime},
+\text{instrument})$, columns $(\text{feature}\,|\,\text{label})$ --- consumed
+directly by \code{DataHandlerLP.from\_df}. JP fundamentals carry a \code{.T}
+suffix that is stripped so fundamentals join prices. Thin cross-sections
+($<30$ names) are dropped as unstable for ranking and normalization.
+
+\begin{keybox}[Design]
+The panel is the single contract between the warehouse and the models: a monthly,
+cross-sectional, lookahead-safe frame of $z$-scored fundamentals plus a forward
+return. Expected returns from the alpha model are therefore \emph{monthly}
+forecasts --- annualize by $\times\,12$ before feeding a portfolio optimizer.
+\end{keybox}
+
+%======================================================================
+\part*{Part II\quad The qlib quant desk}
+\addcontentsline{toc}{section}{Part II\quad The qlib quant desk}
+
+\section{Cross-sectional alpha model (return prediction)}
+\label{sec:alpha}
+\emph{Code:} \code{api/quant/qlib\_alpha.py}, \code{api/quant/qlib\_data.py},
+\code{api/quant/alpha\_signal.py}; built on qlib's \code{LGBModel} (LightGBM).
+
+\subsection{Objective}
+Learn a function $f:\zv\mapsto\hat y$ mapping the standardized cross-sectional
+feature vector of a name to its expected forward return. The prediction
+$\hat y=f(\zv)$ is the \emph{alpha signal}: a per-name, per-month score
+interpreted as an expected forward return.
+
+\subsection{Gradient-boosted decision trees}
+The model is an additive ensemble of $M$ regression trees with learning rate
+$\eta$,
+\begin{equation}
+  F_M(\zv)\;=\;\sum_{m=1}^{M}\eta\,h_m(\zv),
+  \qquad h_m\ \text{a regression tree.}
+\end{equation}
+Under the squared-error objective
+$\mathcal L=\sum_i\tfrac12\big(y_i-F(\zv_i)\big)^2$, boosting stage $m$ fits the
+new tree $h_m$ to the negative functional gradient --- here simply the residual ---
+with unit Hessian:
+\begin{equation}
+  g_i \;=\; -\frac{\partial \mathcal L}{\partial F}\bigg|_{F_{m-1}}
+        \;=\; y_i-F_{m-1}(\zv_i),
+  \qquad h_i \;=\; \frac{\partial^2 \mathcal L}{\partial F^2}\;=\;1.
+\end{equation}
+LightGBM grows each tree \emph{leaf-wise} over a histogram approximation of the
+features. Splitting a node with instance set $I$ into $I_L,I_R$ yields the gain
+\begin{equation}
+  \text{Gain}=\tfrac12\!\left[
+  \frac{\big(\sum_{i\in I_L}g_i\big)^2}{\sum_{i\in I_L}h_i+\lambda}
+  +\frac{\big(\sum_{i\in I_R}g_i\big)^2}{\sum_{i\in I_R}h_i+\lambda}
+  -\frac{\big(\sum_{i\in I}g_i\big)^2}{\sum_{i\in I}h_i+\lambda}\right]-\gamma,
+\end{equation}
+where $\lambda$ is the $L_2$ leaf regularizer and $\gamma$ the per-split penalty.
+Trees capture non-linearities and factor \emph{interactions} that a linear factor
+model cannot represent.
+
+\begin{modelbox}{Shipped hyperparameters (\texttt{DEFAULT\_LGB\_PARAMS})}
+\small
+\begin{tabular}{@{}llll@{}}
+\code{loss} = mse & \code{learning\_rate} = 0.03 & \code{num\_leaves} = 31 & \code{max\_depth} = 6\\
+\code{colsample\_bytree} = 0.8 & \code{subsample} = 0.8 & \code{subsample\_freq} = 1 & \code{min\_child\_samples} = 50\\
+\code{lambda\_l1} = 1.0 & \code{lambda\_l2} = 1.0 & \code{num\_boost\_round} = 500 & \code{early\_stopping\_rounds} = 40\\
+\end{tabular}\\[4pt]
+Regularization ($L_1/L_2$ leaf penalties, shallow depth, feature/row subsampling)
+plus early stopping on a held-out validation segment control overfitting in a
+setting with a low signal-to-noise ratio.
+\end{modelbox}
+
+\subsection{Training, splitting, and persistence}
+The panel is split \emph{chronologically} by unique dates into contiguous
+train / validation / test segments (defaults $70/15/15$). Training runs the real
+qlib \code{DatasetH} pipeline; the \code{AlphaLGB} subclass overrides \code{fit}
+to attach LightGBM's early-stopping and evaluation callbacks directly, so training
+runs with plain LightGBM and needs no \code{qlib.init} or metric-tracking backend.
+Prediction runs the stored booster on any reindexed feature matrix --- including a
+single live month --- so scoring never rebuilds a \code{DatasetH}. Artifacts (the
+booster plus metadata: feature identity/order, label horizon, train range, IC)
+are serialized per jurisdiction and hot-reloaded on file mtime.
+
+For the live cross-section the model builds a \emph{features-only} panel
+(\code{require\_label=False}) over a short lookback and scores the newest month:
+the current month has no realized forward return, so a label join would drop
+exactly the cross-section we want to score.
+
+\subsection{Evaluation: the information coefficient}
+Predictive power is measured per month by the cross-sectional correlation between
+prediction and realized return:
+\begin{align}
+  \IC_t &= \Corr\big(\hat y_{\cdot,t},\,y_{\cdot,t}\big)\ \text{(Pearson)}, &
+  \RankIC_t &= \rho_{\text{Spearman}}\big(\hat y_{\cdot,t},\,y_{\cdot,t}\big),
+\end{align}
+summarized by the mean IC and the information ratio of the signal,
+$\mathrm{ICIR}=\overline{\IC}/\Std(\IC)$ (and its rank analogue). A monthly equity
+signal with $\overline{\RankIC}\approx 0.05\text{--}0.10$ is usable. The
+\emph{in-sample} test segment of the shipped US/JP models reaches
+$\overline{\RankIC}\approx 0.08\text{--}0.14$; the \emph{out-of-sample}
+walk-forward figure (\S\ref{sec:bt}) is materially lower and is the number used
+for any performance claim.
+
+\section{Factor-structured risk models (forward covariance)}
+\label{sec:risk}
+\emph{Code:} \code{api/quant/qlib\_risk.py} (statistical) and
+\code{api/quant/risk.py} (Ledoit--Wolf, Fama--French).
+
+A portfolio optimizer needs a forward covariance $\Sigma$ that is well conditioned
+and invertible. A raw $N\times N$ sample covariance from a short daily window is
+noisy and near-singular. All three risk models replace it with a structured,
+lower-parameter estimator. Each is selectable at runtime.
+
+\subsection{Statistical factor covariance (qlib \texttt{StructuredCovEstimator})}
+Returns are modeled as driven by $K$ latent statistical factors,
+\begin{equation}
+  X = B\,F\tr + U, \qquad
+  \Cov(X) = F\,\Cov(B)\,F\tr + \diag\!\big(\Var(U)\big),
+\end{equation}
+where $X\in\R^{T\times N}$ is the return panel, $F\in\R^{N\times K}$ the factor
+\emph{exposures} (principal components; factor analysis is also supported),
+$B\in\R^{T\times K}$ the factor \emph{returns} (component scores), and $U$ the
+idiosyncratic residual. Writing $\Sigma_B=\Cov(B)$ and $\mathbf d=\Var(U)$,
+\begin{equation}
+  \boxed{\;\Sigma \;=\; F\,\Sigma_B\,F\tr + \diag(\mathbf d)\;}
+\end{equation}
+--- a low-rank-plus-diagonal shrinkage of the sample covariance. The number of
+factors is clamped to $K=\min(K_0,\,N-1,\,T-2)$ for safety. Estimation is on
+\emph{raw} returns (the estimator's percentage-rescaling is disabled, keeping
+variances in return units); $\Sigma_B$ and $\mathbf d$ are annualized by $\times
+252$, and $\Sigma$ is rebuilt from the annualized decomposition, symmetrized, and
+given a $10^{-10}$ ridge for numerical positive-definiteness. Forward volatility
+per name is $\sigma_i=\sqrt{\Sigma_{ii}}$. The decomposition $(F,\Sigma_B,\mathbf
+d)$ is consumed directly by the enhanced-indexing optimizer (\S\ref{sec:enh}).
+
+\subsection{Ledoit--Wolf shrinkage (constant-correlation target)}
+\label{sec:lw}
+An analytic shrinkage of the MLE sample covariance $S$ toward a
+constant-correlation target $F$. With variances $s_{ii}$, standard deviations
+$\sigma_i=\sqrt{s_{ii}}$, and mean pairwise correlation
+$\bar r=\tfrac{2}{N(N-1)}\sum_{i<j}s_{ij}/(\sigma_i\sigma_j)$, the target is
+$F_{ii}=s_{ii}$, $F_{ij}=\bar r\,\sigma_i\sigma_j$, and
+\begin{equation}
+  \Sigma^\star=\delta F+(1-\delta)S, \qquad
+  \delta=\clip\!\Big(\tfrac{\pi/\gamma}{T},\,0,\,1\Big),
+\end{equation}
+where $\gamma=\lVert S-F\rVert_F^2$ measures target misspecification and
+$\pi=\sum_{i,j}\big[\tfrac1T\sum_t (x_{ti}x_{tj}-s_{ij})^2\big]$ is the summed
+asymptotic variance of the entries of $S$. The optimal intensity $\delta$ trades
+sample noise against target bias; the result is annualized $\times 252$.
+
+\subsection{Fama--French fundamental covariance}
+\label{sec:ffcov}
+A named-factor analogue of the statistical model:
+\begin{equation}
+  \Sigma = B\,F_{\text{ann}}\,B\tr + D,
+\end{equation}
+with $B$ the per-name FF loadings (\code{fact\_factor\_loadings}, \S\ref{sec:ffreg}),
+$F_{\text{ann}}=252\cdot\Cov(\text{factor returns})$ estimated over the lookback,
+and $D=\diag(\text{residual\_vol}_i^2)$ from the regression meta. Model ids
+\code{ff3}, \code{ff5}, \code{ff5\_plus\_mom} select the factor set
+(FF6 $=$ FF5 $+$ momentum). Names with missing loadings fall back to their sample
+diagonal with a surfaced warning; an unavailable factor model degrades to
+Ledoit--Wolf.
+
+\section{Portfolio optimization (dual backend)}
+\label{sec:opt}
+\emph{Code:} \code{api/quant/qlib\_optimize.py} dispatches at runtime to a
+\emph{native} optimizer (\code{api/quant/optimize.py}) or any qlib optimizer;
+both consume the same $\muv,\Sigma$ and return a uniform \code{PortfolioSolution}.
+
+\subsection{Native optimizer: multi-term mean--variance utility}
+The native backend maximizes a mean--variance utility with factor-tilt,
+turnover, and concentration penalties:
+\begin{equation}
+  \max_{\wv}\;\;
+  \wv\tr\muv
+  -\tfrac12\lambda\,\wv\tr\Sigma\wv
+  -\gamma_f\big\lVert S\odot a\odot(B\tr\wv-\mathbf t)\big\rVert_2^2
+  -\gamma_{\text{to}}\lVert\wv-\wv_0\rVert_1
+  -\gamma_c\lVert\wv\rVert_2^2,
+\end{equation}
+subject to full investment $\ones\tr\wv=1$, per-name bounds $l_i\le w_i\le u_i$,
+a gross cap $\sum_i|w_i|\le G$, a short-leg cap $\sum_i\max(-w_i,0)\le \rho\sum_i|w_i|$,
+sector caps $\mathbf a_s\tr\wv\le c_s$, an annualized volatility cap
+$\wv\tr\Sigma\wv\le\sigma_{\max}^2$, and factor caps/ranges
+$|\mathbf b_j\tr\wv|\le\text{cap}_j$. Here $\lambda$ is risk aversion; $\gamma_f$
+penalizes deviation of the portfolio's factor exposures $B\tr\wv$ from targets
+$\mathbf t$ (scaled by $S$, gated by the active mask $a$); $\gamma_{\text{to}}$
+penalizes turnover against the current book $\wv_0$; and $\gamma_c$ penalizes
+concentration.
+
+The problem is solved by sequential least-squares programming (SLSQP), which
+handles the nonlinear volatility and factor constraints natively and converges
+quickly at portfolio scale ($N\lesssim100$). SLSQP is given the analytic
+gradient
+\begin{equation}
+  \nabla \;=\; -\muv+\lambda\Sigma\wv
+  +2\gamma_f\,B\big(S^2\odot a\odot(B\tr\wv-\mathbf t)\big)
+  +\gamma_{\text{to}}\,\sgn(\wv-\wv_0)+2\gamma_c\wv .
+\end{equation}
+
+\paragraph{Cardinality (mixed-integer program).} When a maximum position count
+$\lVert\wv\rVert_0\le K$ is requested, the problem becomes a mixed-integer program
+with binary inclusion indicators $y_i\in\{0,1\}$:
+\begin{equation}
+  \sum_i y_i\le K,\qquad
+  \begin{cases}
+    0\le w_i\le u_i\,y_i, & \text{long-only,}\\[2pt]
+    -u_i\,y_i\le w_i\le u_i\,y_i, & \text{long/short,}
+  \end{cases}
+  \qquad w_i\ge f\,y_i\ \text{(floor on included names),}
+\end{equation}
+retaining the convex volatility, sector, and factor constraints. It is solved via
+cvxpy over the first available MIP backend (HiGHS $\to$ SCIP $\to$ CBC $\to$
+GLPK\_MI $\to$ MOSEK); if none is installed the route surfaces a clear
+``MIP unavailable'' error rather than silently dropping the constraint.
+
+\paragraph{Diagnostics and frontier.} The solver reports factor exposures
+$B\tr\wv$, marginal risk contributions $(\Sigma\wv)\odot\wv/\sqrt{\wv\tr\Sigma\wv}$,
+the effective number of names $1/\sum_i w_i^2$, and the covariance condition
+number; it also sweeps $\lambda$ over a fixed grid to trace a mini efficient
+frontier.
+
+\subsection{qlib optimizers (long-only, fully invested)}
+All satisfy $\ones\tr\wv=1,\ \wv\ge0$:
+\begin{center}\small
+\begin{tabular}{@{}>{\bfseries\color{navy}}l l@{}}
+\toprule
+\tabhead{Backend} & \tabhead{Objective} \\
+\midrule
+GMV (min variance)   & $\displaystyle\min_{\wv}\ \wv\tr\Sigma\wv$ \\[3pt]
+MVO (mean--variance) & $\displaystyle\max_{\wv}\ \lambda\,\tilde r\tr\wv-\wv\tr\Sigma\wv$
+   \quad ($\tilde r$ scaled to $\Sigma$'s volatility) \\[3pt]
+RP (risk parity)     & choose $\wv$ s.t.\ $w_i(\Sigma\wv)_i=w_j(\Sigma\wv)_j\ \forall i,j$ \\[3pt]
+Inverse-vol          & $\displaystyle w_i=\frac{1/\sigma_i}{\sum_j 1/\sigma_j},\quad \sigma_i=\sqrt{\Sigma_{ii}}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+Risk parity equalizes the risk contributions $\mathrm{RC}_i=w_i(\Sigma\wv)_i$,
+which sum to total variance $\sum_i\mathrm{RC}_i=\wv\tr\Sigma\wv$; GMV/MVO/RP are
+solved with \code{scipy.optimize} and admit optional turnover ($\delta$) and $L_2$
+($\alpha$) terms.
+
+\subsection{Enhanced indexing (benchmark-relative)}
+\label{sec:enh}
+Given benchmark weights $\wv_b$, active weights $\mathbf d=\wv-\wv_b$, and active
+factor exposure $\mathbf v=\mathbf d\tr F$, the enhanced-indexing optimizer
+maximizes active return minus active (tracking-error) risk under bounded name and
+factor deviations:
+\begin{equation}
+  \max_{\wv}\;\;
+  \mathbf d\tr\mathbf r
+  -\lambda\big(\mathbf v\tr\Sigma_B\mathbf v+\mathbf d\tr\diag(\mathbf d_u)\,\mathbf d\big)
+  \quad\text{s.t.}\quad
+  \wv\ge0,\ \ones\tr\wv=1,\
+  \lVert\wv-\wv_0\rVert_1\le\delta,\
+  |\mathbf d|\le b_{\text{dev}},\ |\mathbf v|\le f_{\text{dev}},
+\end{equation}
+where $\mathbf d_u=\Var(U)$ is the specific variance. It is a convex quadratic
+program consuming the statistical-covariance decomposition $(F,\Sigma_B,\mathbf
+d_u)$ of \S\ref{sec:risk} directly, solved by cvxpy/ECOS; on solver failure it
+degrades to the benchmark weights with a warning.
+
+\subsection{Reported portfolio statistics}
+For a solution $\wv^\star$ the desk reports
+$\E[r]_{\text{ann}}=\wv^{\star\mathsf T}\muv$,
+$\sigma_{\text{ann}}=\sqrt{\wv^{\star\mathsf T}\Sigma\wv^\star}$, Sharpe
+$=(\E[r]_{\text{ann}}-r_f)/\sigma_{\text{ann}}$, and the factor exposures and
+risk contributions above.
+
+\section{Walk-forward out-of-sample backtest}
+\label{sec:bt}
+\emph{Code:} \code{api/quant/qlib\_backtest.py}. A cross-sectional signal
+backtest that is out-of-sample by construction, benchmarked against Fama--French.
+
+\subsection{Walk-forward predictions}
+Let $t_0<t_1<\dots<t_T$ be the panel months, restricted to an investable universe
+(market cap $\ge\$2$B) with each month's forward returns winsorized to the
+$1$st/$99$th cross-sectional percentile (removing micro-cap data artifacts). For
+each test month $t_i$ with $i\ge m_{\min}$ (default $m_{\min}=12$; refit every
+$q=3$ months) a booster $g_{t_i}$ is trained on \emph{all prior} months
+$\{t_j:t_j<t_i\}$ and predicts $\hat\alpha_{k,t_i}=g_{t_i}(\zv_{k,t_i})$. No month
+is ever scored by a model that trained on it. The expensive walk-forward
+predictions are cached separately from portfolio construction, so re-tuning
+$\text{top-}k$ or long/short re-ranks instantly.
+
+\subsection{Portfolio construction}
+Ranking names by $\hat\alpha$ each month, the equal-weight books realize
+\begin{equation}
+  r^{\text{L}}_{t}=\frac1k\!\!\sum_{i\in\text{top-}k}\!\! r_{i,t},
+  \qquad
+  r^{\text{LS}}_{t}=\frac1k\!\!\sum_{i\in\text{top-}k}\!\! r_{i,t}
+  -\frac1k\!\!\sum_{i\in\text{bot-}k}\!\! r_{i,t},
+\end{equation}
+for the long-only and long/short strategies respectively; a month is skipped if
+it has fewer than $\max(k,10)$ (long) or $2k$ (long/short) investable names.
+
+\subsection{Performance and risk metrics}
+With monthly returns $\{r_t\}_{t=1}^n$, equity $E_t=\prod_{s\le t}(1+r_s)$, and
+monthly risk-free $r_{f,t}$:
+\begin{align}
+  R_{\text{ann}}&=\Big(\textstyle\prod_t(1+r_t)\Big)^{12/n}-1, &
+  \sigma_{\text{ann}}&=\Std(r_t)\sqrt{12}, \\
+  \text{Sharpe}&=\frac{R_{\text{ann}}-R^{f}_{\text{ann}}}{\sigma_{\text{ann}}}, &
+  \text{Sortino}&=\frac{R_{\text{ann}}-R^{f}_{\text{ann}}}{\Std(r_t:\,r_t<0)\sqrt{12}}, \\
+  \text{MaxDD}&=\min_t\Big(\tfrac{E_t}{\max_{s\le t}E_s}-1\Big), &
+  \text{Hit}&=\tfrac1n\textstyle\sum_t \mathbf 1[r_t>0].
+\end{align}
+
+\subsection{Fama--French benchmarking and factor attribution}
+The benchmark is the FF \emph{market} total return
+$r^m_t=(\text{Mkt-RF})_t+(\text{RF})_t$, compounded from daily
+\code{fact\_fama\_french} to monthly and aligned to $\{r_t\}$. Relative to it,
+\begin{equation}
+  \text{excess}=R_{\text{ann}}-R^m_{\text{ann}},\quad
+  \text{TE}=\Std(r_t-r^m_t)\sqrt{12},\quad
+  \text{IR}=\frac{\text{excess}}{\text{TE}},\quad
+  \beta=\frac{\Cov(r,r^m)}{\Var(r^m)} .
+\end{equation}
+To separate genuine alpha from factor exposure, the strategy's excess return is
+regressed on the FF five factors plus momentum,
+\begin{equation}
+  r_t-r_{f,t}=\alpha
+  +\beta_{\text{Mkt}}f^{\text{Mkt}}_t+\beta_{\text{SMB}}f^{\text{SMB}}_t
+  +\beta_{\text{HML}}f^{\text{HML}}_t+\beta_{\text{RMW}}f^{\text{RMW}}_t
+  +\beta_{\text{CMA}}f^{\text{CMA}}_t+\beta_{\text{Mom}}f^{\text{Mom}}_t+\varepsilon_t .
+\end{equation}
+OLS on the design $A=[\ones\ \ X]$ gives $\hat\theta=(A\tr A)^{-1}A\tr y$, residual
+variance $\hat s^2=\lVert\varepsilon\rVert^2/(n-K-1)$, coefficient covariance
+$\hat s^2(A\tr A)^{-1}$, the alpha $t$-statistic
+$t_\alpha=\hat\alpha/\mathrm{se}(\hat\alpha)$, annualized alpha
+$\alpha_{\text{ann}}=(1+\hat\alpha)^{12}-1$, and
+$R^2=1-\lVert\varepsilon\rVert^2/\sum_t(y_t-\bar y)^2$.
+
+\begin{keybox}[Interpretation]
+The walk-forward design is what makes the backtest honest: because every month is
+scored by a model that never saw it, the out-of-sample $\overline{\RankIC}$ and
+$t_\alpha$ are the figures used for any claim about the signal. They are markedly
+weaker than the in-sample test-segment numbers of \S\ref{sec:alpha} --- the
+expected outcome of removing look-ahead, and the reason performance is always
+quoted from this path.
+\end{keybox}
+
+%======================================================================
+\part*{Part III\quad Factor and macro-regime models}
+\addcontentsline{toc}{section}{Part III\quad Factor and macro-regime models}
+
+\section{Rolling Fama--French factor regression}
+\label{sec:ffreg}
+\emph{Code:} \code{xbrl\_sec/sec/sources/factor\_model.py}. Per ticker, over a
+rolling $252$-day window (stepped every $21$ trading days, minimum $126$
+observations), excess returns are regressed on the FF factors of the chosen model
+(FF3/FF4/FF5/FF6):
+\begin{equation}
+  r_{i,t}-r_{f,t}=\alpha_i+\sum_k\beta_{i,k}\,f_{k,t}+\varepsilon_{i,t}.
+\end{equation}
+Factor series are region-resolved (US, JP, Developed, Emerging) from the available
+Ken French datasets and converted to decimals; the dependent window is winsorized
+to the $1$st/$99$th percentile.
+
+\subsection{Robust estimation (Huber IRLS)}
+Rather than plain OLS, coefficients are estimated by iteratively reweighted least
+squares with Huber weights, which down-weight outlier days. Over a small number of
+iterations, with scale $\hat s=\operatorname{median}(|e|)/0.6745$ and
+$u=|e|/\hat s$,
+\begin{equation}
+  \hat\beta^{(k+1)}=\big(X\tr W^{(k)}X\big)^{-1}X\tr W^{(k)}y,\qquad
+  w_i=\begin{cases}1,& u_i\le\delta,\\ \delta/u_i,& u_i>\delta,\end{cases}
+  \quad \delta=1.345 .
+\end{equation}
+
+\subsection{HAC (Newey--West) standard errors}
+Standard errors are heteroskedasticity- and autocorrelation-consistent with
+Bartlett weights over $L=5$ lags:
+\begin{equation}
+  \widehat{\Var}(\hat\beta)=(X\tr X)^{-1}\hat S\,(X\tr X)^{-1},\qquad
+  \hat S=\hat\Gamma_0+\sum_{\ell=1}^{L}w_\ell\big(\hat\Gamma_\ell+\hat\Gamma_\ell\tr\big),\quad
+  w_\ell=1-\frac{\ell}{L+1},
+\end{equation}
+with $\hat\Gamma_\ell=\sum_t (x_t\varepsilon_t)(x_{t-\ell}\varepsilon_{t-\ell})\tr$.
+
+\subsection{Stored diagnostics and derived series}
+Each window stores $\alpha$ (annualized $\times252$), the betas, $t$-statistics,
+$p$-values, and standard errors, plus $R^2$, adjusted
+$R^2=1-(1-R^2)\tfrac{n-1}{n-k}$, $F$-statistic and its $p$-value, RMSE, residual
+volatility $\hat\sigma_\varepsilon\sqrt{252}$ (the idiosyncratic $D$ of
+\S\ref{sec:ffcov}), the Durbin--Watson statistic
+$\sum_t(\varepsilon_t-\varepsilon_{t-1})^2/\sum_t\varepsilon_t^2$, and the design
+condition number. A composite \code{quality\_score}$\in\{0,\dots,5\}$ counts how
+many of five gates a window passes (adj.\ $R^2>0.20$; $F$ $p<0.05$; $n\ge200$;
+condition number $<30$; $1.5\le \mathrm{DW}\le2.5$). Between refits, per-day
+model-implied returns $\hat r_{i,t}=\alpha_i/252+\sum_k\beta_{i,k}f_{k,t}+r_{f,t}$
+are written to \code{fact\_factor\_implied\_returns}. These loadings feed the WACC
+(\S\ref{sec:wacc}) and the FF structured covariance (\S\ref{sec:ffcov}).
+
+\section{Macro-cycle regime models}
+\label{sec:regime}
+\emph{Code:} \code{xbrl\_sec/sec/cycle/}. The regime stack has three layers: a
+multimodal feature set, a dimensionality-reduction \emph{baseline} that produces
+latent cycle factors, and two \emph{regime models} (HMM and VAE) that run on top,
+each mapped to interpretable business-cycle phases and then linked to forecasting
+through regime-conditioned factor IC.
+
+\subsection{Feature construction}
+\code{cycle/features.py} assembles a monthly, point-in-time, multimodal feature
+matrix across three modalities --- \emph{macro} (growth, inflation, rates,
+liquidity, credit), \emph{market}, and \emph{fundamental} --- each observation
+stamped with its true availability date. Features are standardized with an
+\emph{expanding} (walk-forward) mean and standard deviation,
+$z_{f,t}=(x_{f,t}-\mu_{f,\le t})/\sigma_{f,\le t}$ (minimum $12$ observations), so
+no future information leaks into any month's normalization.
+
+\subsection{Baseline: PCA / dynamic-factor compression}
+\code{cycle/baselines.py} compresses the (mean-centered) feature matrix to $K$
+latent cycle factors via the SVD $X=U\Sigma V\tr$, taking the leading components
+$\text{factors}=U_{:,1:K}\,\Sigma_{1:K}$ with explained-variance ratios
+$\sigma_k^2/\sum\sigma^2$. The \code{dfm} (dynamic-factor) variant additionally
+smooths the factors with an exponentially weighted moving average (span $3$),
+approximating the persistence of a dynamic factor model. The factors are written
+to \code{fact\_cycle\_state\_monthly.latent\_cycle} and are the input to the two
+regime models.
+
+\subsection{Phase calibration and labeling}
+\label{sec:phasecal}
+Latent factors have arbitrary sign and order, so \code{cycle/phase.py} anchors
+them to interpretable phases. It (i) selects the factor most correlated with an
+external stress/recession proxy from the macro store and orients it so ``high $=$
+stress''; (ii) maps the factor to a rolling stress \emph{percentile} $s_t$ over a
+$120$-month window; and (iii) thresholds $s_t$ into four phases
+$\{$contraction, late\_cycle, mid\_expansion, early\_expansion$\}$. For US models
+the thresholds are calibrated against the NBER recession chronology (via
+\code{USREC}'s trough convention) by maximizing balanced accuracy
+$\tfrac12(\mathrm{TPR}+\mathrm{TNR})$ over a grid; labels are then smoothed
+(EWMA) and passed through a minimum-phase-duration filter that dissolves runs
+shorter than three months. Phase confidence is a bounded function of distance from
+the $0.5$ percentile,
+$c_t=\clip(1.5\,|s_t-0.5|+0.45,\,0.45,\,0.90)$.
+
+\subsection{Gaussian Hidden Markov Model}
+\label{sec:hmm}
+\code{cycle/hmm.py} fits a Gaussian HMM (default $K=4$ states, full covariance)
+over the latent cycle factors $\xv_t$:
+\begin{equation}
+  \xv_t\mid s_t{=}k\sim\mathcal N(\boldsymbol\mu_k,\Sigma_k),\qquad
+  A_{ij}=\Prob(s_t{=}j\mid s_{t-1}{=}i),\qquad
+  \pi_k=\Prob(s_1{=}k).
+\end{equation}
+The parameters $\{\pi,A,\boldsymbol\mu_k,\Sigma_k\}$ are fit by Baum--Welch
+(the EM algorithm for HMMs). The forward--backward recursions define
+$a_t(k)=\Prob(\xv_{1:t},s_t{=}k)$ and $b_t(k)=\Prob(\xv_{t+1:T}\mid s_t{=}k)$,
+from which the smoothed state posterior is
+\begin{equation}
+  \gamma_t(k)=\Prob(s_t{=}k\mid\xv_{1:T})
+  =\frac{a_t(k)\,b_t(k)}{\sum_{k'}a_t(k')\,b_t(k')} .
+\end{equation}
+The per-month confidence is $\max_k\gamma_t(k)$ and the MAP state path is recovered
+by Viterbi. States are mapped to phases by ordering their mean stress score
+(\S\ref{sec:phasecal}). If \code{hmmlearn} is unavailable, a deterministic
+$k$-means-style assignment with empirical transition counts produces the same
+output shape.
+
+\subsection{Temporal multimodal variational autoencoder}
+\label{sec:vae}
+\code{cycle/vae.py} is an optional VAE with encoder
+$q_\phi(\zv\mid\xv)=\mathcal N\!\big(\boldsymbol\mu_\phi(\xv),\diag\boldsymbol\sigma_\phi^2(\xv)\big)$,
+decoder $p_\theta(\xv\mid\zv)$, and prior $p(\zv)=\mathcal N(\mathbf0,I)$. It is
+trained by maximizing the evidence lower bound with a temporal smoothness penalty:
+\begin{equation}
+  \mathcal L(\theta,\phi)=
+  \underbrace{\E_{q_\phi}\!\big[\log p_\theta(\xv\mid\zv)\big]}_{\text{reconstruction}}
+  -\;\beta\,\underbrace{\mathrm{KL}\!\big(q_\phi(\zv\mid\xv)\,\Vert\,p(\zv)\big)}_{\text{regularization}}
+  -\;\eta\sum_t\lVert\boldsymbol\mu_{\phi,t}-\boldsymbol\mu_{\phi,t-1}\rVert^2,
+\end{equation}
+using the reparameterization
+$\zv=\boldsymbol\mu_\phi+\boldsymbol\sigma_\phi\odot\boldsymbol\epsilon$,
+$\boldsymbol\epsilon\sim\mathcal N(\mathbf0,I)$ (in the shipped configuration
+$\beta=0.05$, $\eta=0.02$). The latent dimensions are split into interpretable
+\emph{growth / inflation / rates-liquidity / credit-stress / market /
+fundamentals} factors. The smoothed reconstruction-error stress percentile is
+thresholded into phases exactly as in \S\ref{sec:phasecal}, and per-modality
+reconstruction MSE attributes stress to macro vs.\ market vs.\ fundamentals. If
+PyTorch is absent, a PCA surrogate produces the same persisted output shape.
+
+\subsection{Regime-conditioned factor IC}
+\label{sec:regic}
+\code{cycle/ic.py} is the link from the regime model to forecasting. For each
+fundamental factor $m$, \emph{conditioned on the regime}, it computes the rank
+information coefficient against forward returns over each month and horizon:
+\begin{equation}
+  \IC_{\text{regime}}(m)=\rho_{\text{Spearman}}\big(x_{m,i},\,r^{\text{fwd}}_i \;\big|\; \text{regime}\big).
+\end{equation}
+Two variants are stored to \code{fact\_equity\_factor\_ic\_regime}: a
+\emph{hard-assigned} IC (grouping by the MAP phase label) and a
+\emph{probability-weighted} IC that weights each observation by the regime
+posterior $\gamma_t(k)$ (soft assignment), using the weighted Spearman correlation
+of the value and forward-return ranks. The result answers \emph{which factors have
+actually predicted returns in conditions like today's}, and drives the scanner's
+factor-family weights (\S\ref{sec:interest}).
+
+\begin{modelbox}{From regime to score: the one live consumption path}
+\small
+\code{ic\_weights.family\_weights} reads the \emph{latest date's} regime-IC rows,
+aggregates per-metric $|\IC|$ to family-level emphasis
+$e_{\text{fam}}=\overline{|\IC|}_{\text{fam}}$ (normalized to sum to one over
+value / growth / quality), and caches it. The scanner then re-splits its
+fundamental score budget in proportion to $e_{\text{fam}}$: the interest score
+leans harder on whichever factor family the current regime says is most
+predictive, and reverts \emph{exactly} to the fixed weights when the IC table is
+unavailable. The learned alpha model itself is regime-\emph{agnostic} --- it
+learns from factor values, and the regime enters forecasting through the score
+weights, not (currently) as a model feature.
+\end{modelbox}
+
+%======================================================================
+\part*{Part IV\quad Deterministic valuation and scoring}
+\addcontentsline{toc}{section}{Part IV\quad Deterministic valuation and scoring}
+
+\section{Valuation models}
+\label{sec:val}
+\emph{Code:} \code{ai\_analyst/dcf\_engine.py}, \code{committee/wacc.py},
+\code{committee/valuation.py}, \code{committee/segments.py}. Deterministic, on a
+$7$-year explicit horizon (\code{DCF\_HORIZON\_YEARS}). The models are intentionally
+transparent so the equity-research ``why'' of every number reads off the projected
+statements; the LLM committee supplies only the bounded assumptions, and the math
+below turns them into figures.
+
+\subsection{Discounted cash flow (unlevered FCFF)}
+For each forecast year $i=1,\dots,7$:
+\begin{align}
+  \text{Rev}_i&=\text{Rev}_{i-1}(1+g_i), &
+  \text{EBIT}_i&=\text{Rev}_i\cdot m, \\
+  \text{NOPAT}_i&=\text{EBIT}_i-\max(\text{EBIT}_i,0)\,\tau, &
+  \text{FCF}_i&=\text{NOPAT}_i+\text{D\&A}_i-\text{Capex}_i-\Delta\text{NWC}_i,
+\end{align}
+with D\&A, Capex, and $\Delta$NWC taken as fractions of revenue (D\&A\% from the
+latest historical ratio). Terminal value uses Gordon growth, and the
+enterprise/equity bridge is
+\begin{equation}
+  \text{TV}=\frac{\text{FCF}_7(1+g_\infty)}{\text{WACC}-g_\infty},\qquad
+  \text{EV}=\sum_{i=1}^{7}\frac{\text{FCF}_i}{(1+\text{WACC})^i}+\frac{\text{TV}}{(1+\text{WACC})^7},
+\end{equation}
+$\text{Equity}=\text{EV}-\text{NetDebt}$, per share $=\text{Equity}/\text{shares}$.
+A $5\times5$ sensitivity grid varies WACC by $\pm200$\,bp and $g_\infty$ by
+$\pm100$\,bp (a growth$\times$WACC grid is also produced around the base case).
+
+\subsection{Cost of capital (WACC)}
+\label{sec:wacc}
+Cost of equity is built from the FF factor betas (\S\ref{sec:ffreg}) and long-run
+premia $\Pi_k=252\cdot\overline{f_k}$:
+\begin{equation}
+  R_e^{\text{CAPM}}=r_f+\beta_{\text{Mkt}}\,\text{ERP},\qquad
+  R_e^{\text{FF5}}=r_f+\sum_k\beta_k\,\Pi_k,
+\end{equation}
+with $r_f$ the 10Y Treasury (\code{FRED:DGS10}); both are clamped to
+$[r_f+2\%,\,r_f+12\%]$. Cost of debt is $R_d=r_f+\text{spread}$, where the spread
+comes from a Damodaran-style synthetic-rating table keyed on interest coverage
+$\text{EBIT}/\text{Interest}$, blended with the realized $\text{interest}/\text{debt}$
+rate when that looks plausible. Then
+\begin{equation}
+  \text{WACC}=\frac{E}{V}R_e+\frac{D}{V}R_d(1-\tau),\qquad V=E+D,
+\end{equation}
+$E$ market cap, $D$ total financial debt, clamped to $[6\%,16\%]$. The headline
+uses $R_e^{\text{CAPM}}$ (the market convention and a stable discount rate); the
+multi-factor $R_e^{\text{FF5}}$ is reported alongside as an exhibit. For the
+sum-of-the-parts DCF, \code{segment\_wacc} shifts the equity beta and adds a
+growth-risk premium so higher-growth segments carry a higher discount rate.
+
+\subsection{Reverse DCF, scenarios, sum-of-the-parts, triangulation}
+\emph{Reverse DCF} solves, by bisection, the flat growth $g^\star$ (or steady
+margin $m^\star$) such that $\text{PerShare}(g^\star)=\text{price}$ --- i.e.\ what
+the market is currently pricing in. \emph{Scenario weighting} runs the DCF once per
+upside/base/downside scenario (sharing one deterministic share count and net debt)
+and combines the per-share values $V_s$ with probabilities $\sum_s p_s=1$ into
+$\text{FV}=\sum_s p_s V_s$. \emph{Sum-of-the-parts} values each reportable segment
+on its own growth/margin and a segment-specific WACC, with segment FCF
+$\approx\text{NOPAT}\times\text{conversion}$, and sums the segment enterprise
+values. \emph{Triangulation} builds a football field from the SOTP range
+(declared primary), the consolidated DCF scenario range, and peer-multiples-implied
+values, reporting implied upside $\text{FV}/\text{price}-1$.
+
+\section{Scoring and ranking models}
+\label{sec:score}
+
+\subsection{Value $+$ sentiment interest score}
+\label{sec:interest}
+\emph{Code:} \code{api/routers/screener\_agent.py}. Each component is min--max
+normalized across the shortlist to $[0,1]$ ($v_{\text{PE}}$ inverted --- cheaper is
+better), plus a normalized alpha $v_\alpha$ from the qlib model:
+\begin{equation}
+  \text{score}=w_\alpha\,v_\alpha+(1-w_\alpha)\sum_k w_k\,v_k,
+  \qquad \text{interest}=100\cdot\text{score},
+\end{equation}
+with $w_\alpha\approx0.40$ (dominant when the alpha model covers the shortlist).
+The fundamental sub-weights $w_k$ (FCF-yield, P/E, growth, MD\&A tone, news) start
+from availability-branched defaults and are re-split between the \emph{value} and
+\emph{growth} blocks by the current regime's factor IC (\S\ref{sec:regic}): with
+family emphases $e_{\text{val}},e_{\text{grw}}$, the fundamental budget is allocated
+$\propto e_{\text{val}}:e_{\text{grw}}$. With no model or IC available it reduces
+exactly to the fixed-weight composite.
+
+\subsection{Group relative-value composite}
+\label{sec:group}
+\emph{Code:} \code{ai\_analyst/committee/group.py}. For each metric $k$ (P/E,
+EV/EBITDA, P/B, FCF yield, dividend, revenue growth/CAGR, gross/operating margin),
+a cross-sectional $z$-score $z_{k,i}=(x_{k,i}-\bar x_k)/\hat\sigma_k$ and a signed
+weight $w_k$ (negative for cheaper-is-better multiples). Loss-making multiples
+(negative P/E, EV/EBITDA, P/B) are excluded from their metric's population rather
+than ranked as ``cheap''. The composite is
+\begin{equation}
+  \text{composite}_i=\sum_k w_k\,z_{k,i},
+\end{equation}
+ordered descending; terciles map to attractive / fair / expensive. The per-name
+audit trail $(x\to z\to \times w\to\text{contribution})$ sums exactly to the
+composite. An optional LLM narrative may be attached; the ranking itself is
+deterministic.
+
+\subsection{MD\&A management tone}
+An LLM reads an excerpt of each name's latest MD\&A and returns a structured tone
+in $[-1,1]$, a positive/neutral/negative guidance label, and risk flags; the tone
+feeds $v_{\text{tone}}$ in \S\ref{sec:interest}.
+
+%======================================================================
+\part*{Part V\quad How the models connect}
+\addcontentsline{toc}{section}{Part V\quad How the models connect}
+
+\section{The model map}
+The three quantitative paths and the valuation path meet at the investment
+committee. The valuation path answers what a business is worth; the quant path
+answers what to expect and how to size it; the macro-cycle path conditions the
+scoring on the regime; and the committee fuses the deterministic evidence and the
+quant signals into a reasoned, auditable verdict.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[node distance=9mm and 14mm, every node/.style={font=\sffamily},
+   mm/.style={proc, minimum width=34mm}]
+  \node[store, minimum width=56mm] (wh) {Warehouse\;\;\scriptsize prices · fundamentals · factors · macro};
+
+  \node[mm, below=11mm of wh, xshift=-52mm] (ff) {FF rolling regression\\\scriptsize $\beta$, residual vol};
+  \node[mm, below=11mm of wh] (cyc) {Macro-cycle model\\\scriptsize HMM / VAE $\to$ regime};
+  \node[mm, below=11mm of wh, xshift=52mm] (panel) {PIT fundamentals panel\\\scriptsize $z$-scored features};
+
+  \node[mm, below=9mm of ff] (wacc) {WACC / structured $\Sigma$};
+  \node[mm, below=9mm of cyc] (regic) {Regime-conditioned IC};
+  \node[llm, below=9mm of panel, minimum width=34mm] (alpha) {qlib LightGBM alpha $\to\ \muv$};
+
+  \node[mm, below=9mm of wacc] (dcf) {DCF · SOTP · reverse};
+  \node[mm, below=9mm of regic] (interest) {Interest score / family wts};
+  \node[llm, below=9mm of alpha, minimum width=34mm] (sigma) {Structured cov $\to\ \Sigma$};
+
+  \node[llm, below=9mm of sigma, minimum width=34mm] (opt) {Portfolio optimizer $\to\ \wv$};
+
+  \node[term, below=18mm of interest, minimum width=92mm] (comm)
+    {Investment Committee \;\; \scriptsize evidence $+$ quant signals $\to$ memo $+$ fair value};
+
+  \draw[arr] (wh) -- (ff); \draw[arr] (wh) -- (cyc); \draw[arr] (wh) -- (panel);
+  \draw[arr] (ff) -- (wacc); \draw[arr] (cyc) -- (regic); \draw[arr] (panel) -- (alpha);
+  \draw[arr] (wacc) -- (dcf); \draw[arr] (regic) -- (interest); \draw[arr] (alpha) -- (sigma);
+  \draw[arr] (alpha.west) to[out=180,in=60] (interest.north east);
+  \draw[arr] (sigma) -- (opt);
+  \draw[arr] (dcf.south) |- (comm.west);
+  \draw[arr] (interest.south) -- (comm.north);
+  \draw[arr] (opt.south) |- (comm.east);
+\end{tikzpicture}
+\caption{The model map. Statistical, macro, and valuation paths converge on the
+committee, which produces a reasoned valuation with its evidence rather than a
+single label.}
+\end{figure}
+
+\vfill
+\begin{center}\small\color{muted}
+\emph{Independent, systematic research for educational purposes. Estimates are
+model outputs, not investment advice.}
+\end{center}
+
+\end{document}

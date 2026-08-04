@@ -1,0 +1,510 @@
+\documentclass[11pt]{article}
+\usepackage{mzqastyle}
+\setrunningtitle{SEC \& EDINET Metrics Mapping \& Reconciliation}
+
+\begin{document}
+
+\mzqatitlepage
+  {Data-layer reference}
+  {SEC \& EDINET Metrics Mapping \& Reconciliation}
+  {From raw filed XBRL to a standardized, reconciled fundamentals layer}
+  {The fundamentals AI Analyst reads are not the numbers companies file. They are
+   the output of a multi-stage pipeline that ingests raw XBRL facts from SEC EDGAR
+   (US) and EDINET (Japan), \emph{maps} tens of thousands of heterogeneous filer
+   concepts onto a single governed set of standardized line items, \emph{derives}
+   the items filers omit, \emph{checks} them against accounting identities,
+   \emph{computes} a library of financial metrics, and \emph{reconciles} every
+   computed figure back to the exact source concepts and filings it came from.
+
+   \vspace{8pt}
+   This volume specifies that pipeline end to end: the raw-to-standardized concept
+   mapping and its governance model, the graph-closure derivation and
+   accounting-identity checks, the metric formula registry and its evaluation, and
+   the reconciliation and validation layers that make every number auditable.
+
+   \vspace{8pt}
+   \textit{Companion volumes:} \emph{System Architecture \& Operations},
+   \emph{Quantitative \& ML Models}, and \emph{qlib Integration}.}
+  {Metrics Mapping \& Reconciliation \quad·\quad Generated 31 July 2026}
+
+\mzqatoc
+\clearpage
+
+%======================================================================
+\part*{Part I\quad The standardized layer}
+\addcontentsline{toc}{section}{Part I\quad The standardized layer}
+
+\section{Why a standardized layer exists}
+
+Two companies reporting the identical economic fact --- say, cost of goods sold ---
+will tag it with different XBRL concepts, under different taxonomies, with
+different signs, scales, and statement positions, and one of them may not tag a
+subtotal the other reports explicitly. A US filer uses \code{us-gaap} concepts; a
+Japanese filer uses the EDINET/\code{jppfs} taxonomy in Japanese. Neither is
+directly comparable, and neither is stable across years as taxonomies evolve.
+
+The \code{xbrl\_sec} warehouse solves this with a \emph{standardized layer}: a
+single, governed vocabulary of standardized line items (\code{revenue},
+\code{cost\_of\_goods\_sold}, \code{total\_financial\_debt}, \dots) onto which every
+filer's raw concepts are mapped, and against which a uniform library of metrics is
+computed. AI Analyst reads only this layer; the application never touches raw
+filings. This document specifies how the layer is built and made auditable.
+
+\begin{keybox}[The invariant]
+Every standardized value and every computed metric can be traced back to the exact
+raw concept, filing, and fiscal period it derives from --- or is explicitly marked
+as \emph{derived} (from an accounting identity or a formula) rather than filed. The
+reconciliation layer (\S\ref{sec:recon}) records that trace for every figure, and
+the validation layer (\S\ref{sec:validate}) audits coverage and integrity.
+\end{keybox}
+
+\section{Pipeline overview}
+\label{sec:overview}
+
+Per jurisdiction the pipeline runs as an ordered set of stages. The application is
+read-only; these stages are the write path that maintains the shared warehouse.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[node distance=4mm and 6.5mm, font=\sffamily\footnotesize,
+   st/.style={proc, minimum width=20mm, minimum height=9mm}]
+  \node[data, minimum width=22mm] (edgar) {SEC EDGAR\\\scriptsize companyfacts · XBRL};
+  \node[data, below=8mm of edgar, minimum width=22mm] (edinet) {EDINET\\\scriptsize XBRL packages};
+  \node[st, right=9mm of $(edgar)!0.5!(edinet)$] (parse) {Raw parse\\\scriptsize \code{fact\_fundamentals\_*}};
+  \node[st, right=of parse] (std) {Standardize\\\scriptsize \code{..\_std\_*}};
+  \node[st, right=of std] (metrics) {Metrics\\\scriptsize \code{fact\_metrics\_*}};
+  \node[st, right=of metrics] (recon) {Recon\\\scriptsize \code{..\_recon\_*}};
+  \node[st, right=of recon, fill=tealfill, draw=steel] (val) {Validate};
+
+  \draw[arr] (edgar) -| (parse); \draw[arr] (edinet) -| (parse);
+  \draw[arr] (parse) -- (std); \draw[arr] (std) -- (metrics);
+  \draw[arr] (metrics) -- (recon); \draw[arr] (recon) -- (val);
+
+  \node[below=1mm of parse, font=\sffamily\scriptsize\itshape, text=muted, align=center] {raw facts};
+  \node[below=1mm of std, font=\sffamily\scriptsize\itshape, text=muted, align=center] {mapping +\\graph closure};
+  \node[below=1mm of metrics, font=\sffamily\scriptsize\itshape, text=muted, align=center] {formula\\registry};
+  \node[below=1mm of recon, font=\sffamily\scriptsize\itshape, text=muted, align=center] {source\\trace};
+\end{tikzpicture}
+\caption{The end-to-end fundamentals pipeline. Each stage is idempotent and
+incrementally re-runnable; downstream stages have freshness gates so an unchanged
+input is skipped.}
+\label{fig:pipeline}
+\end{figure}
+
+\begin{center}\small
+\begin{tabular}{@{}>{\bfseries\color{navy}}l p{6.0cm} >{\ttfamily\footnotesize}p{5.0cm}@{}}
+\toprule
+\tabhead{Stage} & \tabhead{What it produces} & \normalfont\tabhead{Primary tables} \\
+\midrule
+Raw parse    & Filed facts as (concept, value, unit, context, period, statement position) & fact\_fundamentals\_\{us,jp\} \\
+Standardize  & Standardized line items via governed mapping $+$ graph closure & fact\_fundamentals\_std\_\{us,jp\} \\
+Metrics      & Derived line items (L1) and financial metrics (L2) from the formula registry & fact\_metrics\_\{us,jp\} \\
+Recon        & Every metric re-expressed with its inputs and traced to source concepts/filings & fact\_metrics\_recon\_\{us,jp\} \\
+Validate     & Coverage, identity, sparsity, and master-quality reports & (report; ref\_std\_identity\_violation) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The schema itself is defined as a large set of sequential, idempotent SQL
+migrations, each guarded so re-running the set against a current database is safe.
+The reference tables the standardizer depends on --- the standardized line-item
+catalogue (\code{ref\_standardized\_line\_items}), the rollup edges
+(\code{ref\_std\_item\_edge}), the identity checks (\code{ref\_std\_identity\_check}),
+and the governed concept mappings --- are loaded before any fundamentals run.
+
+%======================================================================
+\part*{Part II\quad Raw acquisition and parsing}
+\addcontentsline{toc}{section}{Part II\quad Raw acquisition and parsing}
+
+\section{US: SEC companyfacts}
+\label{sec:us-raw}
+US fundamentals originate from SEC EDGAR's structured \emph{companyfacts} (and the
+XBRL filing packages for statement structure). Each raw fact carries its
+\code{us-gaap} (or filer-extension) concept, value, unit, the filing it came from,
+the fiscal period, and --- from the calculation/presentation linkbases --- its
+position in the statement tree (parent, root, weight, presentation order). These
+are written to \code{fact\_fundamentals\_us}.
+
+\paragraph{Fiscal-period alignment.} The SEC \code{fy} tag is the fiscal year of
+the \emph{filing}, not of the reported period. A prior quarter that reappears as a
+comparative in a later 10-Q or 10-K inherits the later filing's \code{fy}. Because
+the standardized key is $(\text{cik},\text{fiscal\_year},\text{fiscal\_period},
+\text{line\_item})$, two genuinely different quarters could otherwise collide.
+Annual rows are therefore re-dated from their \code{period\_end}; quarterly rows are
+period-aligned to the fiscal year they close into, using the company's inferred
+fiscal-year-end month --- so a September-quarter fact for an early-FYE filer lands
+in the correct fiscal year rather than the filing's.
+
+\section{Japan: EDINET XBRL}
+\label{sec:jp-raw}
+Japanese fundamentals originate from EDINET XBRL packages. The parser
+(\code{parsers/edinet\_xbrl.py}) reads the instance document together with the
+calculation and presentation linkbases:
+
+\begin{itemize}
+  \item \textbf{Concept normalization} --- an \code{href} fragment such as
+        \code{jppfs\_cor\_Sales} is normalized to a
+        \code{prefix/localname} concept id; non-numeric concepts (text blocks,
+        abstracts, axes, domains, members, tables) are skipped.
+  \item \textbf{Statement classification} --- the linkbase \code{role} maps to a
+        statement type (balance sheet / income statement / cash flow / equity) via
+        role-string heuristics.
+  \item \textbf{Context and dimensions} --- each fact carries an XBRL \emph{context}
+        (period and any explicit dimensional members). JP standardization is
+        context-aware: a \code{dimension\_signature} distinguishes, for example, a
+        consolidated total from a segment or a prior-period restatement, so the
+        right context is chosen per line item.
+  \item \textbf{Identity concepts} --- cover-page DEI concepts (company name in
+        English/Japanese, security code) are captured for entity resolution.
+\end{itemize}
+
+Facts are written to \code{fact\_fundamentals\_jp} with their context id,
+dimension signature, and statement structure, mirroring the US raw shape so the
+standardizer can treat both jurisdictions uniformly downstream.
+
+%======================================================================
+\part*{Part III\quad The standardization layer}
+\addcontentsline{toc}{section}{Part III\quad The standardization layer}
+
+\section{The governed mapping model}
+\label{sec:mapmodel}
+The heart of standardization is a governed table,
+\code{map\_concept\_to\_taxonomy\_versioned}, that assigns each raw concept to a
+standardized \code{target\_variable} under a set of qualifying conditions. Each
+mapping row carries:
+
+\begin{center}\small
+\begin{tabular}{@{}>{\ttfamily\color{navy}}l p{10.3cm}@{}}
+\toprule
+\normalfont\tabhead{Field} & \normalfont\tabhead{Meaning} \\
+\midrule
+target\_variable & The standardized line item this concept feeds (e.g.\ \code{cost\_of\_goods\_sold}). \code{UNMAPPED} rows are excluded. \\
+tier             & Mapping tier / precedence class (tier-1 primary vs.\ tier-2 secondary). \\
+multiplier       & Scale/sign multiplier applied to the raw value. \\
+sign\_policy / normal\_balance & How the concept's sign is interpreted against the standardized item's normal balance. \\
+mapping\_sector  & The sector scope the mapping applies to (\code{corp}, \code{bank\_financial}, \code{insurance}, \code{reit}, \dots, or universal). \\
+gics\_* & Optional GICS sector / industry-group / industry / sub-industry constraints. \\
+effective\_from/to\_year & The fiscal-year range over which the mapping is valid (taxonomy evolution). \\
+accounting\_standard & Required accounting standard (e.g.\ US-GAAP, IFRS, JGAAP), or unconstrained. \\
+taxonomy\_version & Required taxonomy version, or unconstrained (year-level partial match allowed). \\
+aggregation\_type / priority & How multiple concepts mapping to the same target combine. \\
+confidence       & Governance confidence attached to the mapping. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two sources feed the resolver: the governed versioned table above, and approved
+\emph{company-period exceptions}
+(\code{map\_concept\_to\_taxonomy\_exception}, \code{review\_status='approved'},
+unexpired) that override the general mapping for a specific entity and fiscal-year
+range. Both are indexed by concept id with slash/colon aliasing so
+\code{prefix/local} and \code{prefix:local} forms both resolve.
+
+\section{Mapping resolution}
+\label{sec:resolve}
+For each raw fact, the resolver (\code{versioned\_mapping.select\_versioned\_mapping})
+selects the single best mapping by a deterministic specificity order. An approved
+exception matching the entity, year, period, sector, accounting standard, and
+taxonomy wins outright. Otherwise, among mappings valid for the fact's fiscal year:
+
+\begin{enumerate}
+  \item \textbf{Accounting-standard \& taxonomy gate.} A mapping is discarded if
+        its required accounting standard or taxonomy version is incompatible with
+        the fact. Compatible matches are scored (exact standard/taxonomy $>$
+        same-year taxonomy $>$ unconstrained), and these scores enter the ranking.
+  \item \textbf{Sector specificity.} Candidates are considered in the entity's
+        \emph{sector order} --- most specific first, then universal. Corporate
+        filers fall back \code{corp}\,$\to$\,universal; banks, insurers, REITs, and
+        asset managers use their own scopes plus universal (an insurer, for
+        instance, resolves \code{insurance}\,$\to$\,\code{non\_bank\_financial}\,$\to$\,universal).
+        The first sector with any qualifying candidate wins.
+  \item \textbf{GICS specificity.} Within that sector, a mapping's GICS constraints
+        must match the entity; more specific GICS constraints (sub-industry $>$
+        industry $>$ group $>$ sector) rank higher.
+  \item \textbf{Tie-breaks.} Remaining ties break by accounting/taxonomy score,
+        then jurisdiction match, then earliest effective year, then confidence,
+        then mapping id.
+\end{enumerate}
+
+\begin{notebox}[Why sector scope matters]
+Sector scope prevents category errors that silently corrupt derived figures. An
+insurer's operating investment portfolio, for example, must map to
+\code{investment\_securities}, not to \code{short\_term\_investments} --- otherwise
+it would be netted out as ``excess cash'' in corporate net-debt derivation. The
+resolver's sector hierarchy, plus sector-specific rollup edges (\S\ref{sec:closure}),
+keep each filer's economics on the right standardized items.
+\end{notebox}
+
+\section{Sign, unit, and value canonicalization}
+\label{sec:canon}
+Once a mapping is chosen, the raw value is canonicalized to the standardized item's
+convention:
+\begin{equation}
+  v_{\text{std}} \;=\;
+  \begin{cases}
+    -\,\lvert v_{\text{raw}}\cdot \text{multiplier}\rvert, & \text{line item is canonically negative,}\\[2pt]
+    \phantom{-}\,v_{\text{raw}}\cdot \text{multiplier}, & \text{otherwise.}
+  \end{cases}
+\end{equation}
+Canonically negative items --- cost of goods sold, R\&D, SG\&A, interest expense,
+tax provision, capex, dividends paid, share repurchases --- are stored with a
+consistent negative sign regardless of how the filer signed them, so downstream
+formulas can add line items without sign guesswork. Unit handling ranks candidate
+facts so a monetary line item prefers a currency-unit fact over a share-count fact
+of the same concept. The standardized row also records the source concept id,
+filing id, concept path, standardized concept path, mapping id, currency, and (for
+JP) the context id and dimension signature --- the raw material for the recon
+trace.
+
+\section{Graph closure: deriving what filers omit}
+\label{sec:closure}
+Filers report different subsets of a statement. After the raw mapping pass
+populates the \emph{filed} leaves, \code{std/graph\_closure.py} walks the
+standardized-item hierarchy (\code{ref\_std\_item\_edge}, filtered to the entity's
+sector scope and accounting standard) to derive missing values at the
+$(\text{entity},\text{fiscal\_year},\text{fiscal\_period})$ grain. It runs three
+passes.
+
+\subsection{Top-down residuals (catch-all children)}
+When a parent total is known and exactly one child is missing --- preferentially a
+residual/``catch-all'' child (item class \code{catch\_all}, derivation policy
+\code{residual}, or an \code{other\_}$\ast$ item) --- that child is derived as the
+parent minus its known siblings:
+\begin{equation}
+  \text{child} \;=\; \pm\Big(\text{parent} - \!\!\sum_{\text{known siblings}}\!\! \text{sign}\cdot\text{child}\Big),
+\end{equation}
+with the edge sign applied. This pre-pass runs first so an authoritative parent
+total fills a residual before a partial bottom-up subtotal can.
+
+\subsection{Bottom-up subtotals}
+Intermediate totals are then computed from their children. A parent is marked
+\code{DERIVED\_BOTTOM\_UP} when \emph{all} children are known, or
+\code{DERIVED\_PARTIAL} when at least $80\%$ are known (below that it is left
+missing rather than fabricated from too little). Expense signs are handled once:
+a subtractive edge uses the magnitude of the child and applies the edge sign, so
+already-negative expense facts are not double-counted.
+
+\subsection{Formula line items (L1)}
+Registry-defined derived line items --- the ones that are \emph{always} computed
+rather than filed --- are then evaluated from known values in dependency order
+(\S\ref{sec:registry}); for example
+\begin{align}
+  \text{total\_financial\_debt} &= \text{short\_term\_debt}+\text{LTD\_current}+\text{long\_term\_debt}, \\
+  \text{net\_debt} &= \text{total\_financial\_debt}-\text{cash}-\text{short\_term\_investments}, \\
+  \text{gross\_profit} &= \text{revenue}-\lvert\text{cost\_of\_goods\_sold}\rvert .
+\end{align}
+Sector overrides apply here too --- for insurers, \code{net\_debt} drops the
+short-term-investment offset. Derived items carry a \code{metric\_type} tag
+(\code{RESIDUAL}, \code{DERIVED\_BOTTOM\_UP}, \code{DERIVED\_PARTIAL},
+\code{DERIVED\_TOP\_DOWN}) so their provenance is never confused with a filed value.
+
+\section{Accounting-identity checks}
+\label{sec:identities}
+Closure also \emph{audits} the statements against accounting identities and emits
+violations. Two families of check run at the same entity$\times$period grain.
+
+\paragraph{Rollup consistency.} For every parent whose children are all filed, the
+filed parent is compared to the signed sum of its filed children:
+\begin{equation}
+  \Big\lvert \text{parent} - \!\!\sum_{\text{children}}\!\! \text{sign}\cdot\text{child} \Big\rvert
+  \;>\; \tau\cdot\lvert\text{parent}\rvert
+  \quad\Rightarrow\quad \text{violation},
+\end{equation}
+with a tolerance of $\tau=5$ basis points of the parent magnitude.
+
+\paragraph{Named identities.} Declared checks in \code{ref\_std\_identity\_check}
+(each a left-hand item, a set of right-hand items with signs, a tolerance, and a
+sector/standard scope) verify relations such as
+$\text{Assets}=\text{Liabilities}+\text{Equity}$. When all operands resolve, the
+signed residual is compared to the check's \code{tolerance\_bp}. Failures are
+written to \code{ref\_std\_identity\_violation} with the LHS value, RHS value,
+absolute delta, and delta in basis points --- an auditable record of where a
+filer's statements do not tie out.
+
+\begin{keybox}[Advisory, not blocking]
+Identity violations are recorded for governance and surfaced to the committee's
+data-quality report, but they do not by themselves discard data: real filings
+occasionally fail an identity for benign reasons (rounding, disclosure
+differences). The application's committee treats them as advisory by default
+(see \emph{System Architecture \& Operations}); the warehouse keeps the evidence.
+\end{keybox}
+
+%======================================================================
+\part*{Part IV\quad Metrics computation}
+\addcontentsline{toc}{section}{Part IV\quad Metrics computation}
+
+\section{The formula registry}
+\label{sec:registry}
+\emph{Code:} \code{metrics/formulas.py}, \code{metrics/compute.py}. Metrics are
+defined declaratively as executable formulas over standardized line items,
+generated from a line-item/metric registry so the public ids are governed in one
+place. There are two derived layers:
+
+\begin{itemize}
+  \item \textbf{L1 line items} (\code{\_L1\_FORMULAS}) --- derived
+        \emph{balance-sheet / income / cash-flow} quantities that behave like line
+        items (e.g.\ \code{free\_cash\_flow}, \code{invested\_capital},
+        \code{net\_operating\_assets}, \code{enterprise\_value},
+        \code{tangible\_book\_equity}).
+  \item \textbf{L2 metrics} (\code{\_METRIC\_FORMULAS}) --- ratios, margins, growth
+        rates, turnovers, coverage, yields, and composite signals (e.g.\
+        \code{return\_on\_invested\_capital}, \code{free\_cash\_flow\_yield},
+        \code{price\_to\_earnings\_trailing}, \code{piotroski\_f\_score},
+        \code{sloan\_accruals\_ratio}).
+\end{itemize}
+
+\begin{center}\small
+\begin{tabular}{@{}>{\ttfamily\footnotesize\color{navy}}l >{\ttfamily\footnotesize}p{9.6cm}@{}}
+\toprule
+\normalfont\tabhead{Item / metric} & \normalfont\tabhead{Formula (registry)} \\
+\midrule
+free\_cash\_flow      & cash\_flow\_from\_operations $-$ |capital\_expenditures| \\
+invested\_capital     & total\_equity $+$ net\_debt \\
+net\_operating\_profit\_after\_tax & earnings\_before\_interest\_taxes $\times$ (1 $-$ cash\_tax\_rate) \\
+return\_on\_invested\_capital & nopat / invested\_capital \\
+gross\_margin         & gross\_profit / revenue \\
+free\_cash\_flow\_yield & free\_cash\_flow / market\_capitalization \\
+price\_to\_earnings\_trailing & market\_cap / net\_income\_attributable\_to\_common \\
+days\_sales\_outstanding & accounts\_receivable\_net $\times$ 365 / revenue \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Dependency ordering and safe evaluation}
+Formulas reference other derived items (\code{return\_on\_invested\_capital} needs
+\code{nopat} and \code{invested\_capital}, which need
+\code{cash\_tax\_rate} and \code{net\_debt}). The registry is compiled into a
+directed dependency graph and \emph{topologically ordered}; a cycle is a hard
+error. Each formula is evaluated in a sandboxed namespace with a fixed set of safe
+helpers --- \code{\_div} (null- and zero-safe division), \code{pct\_change},
+\code{cagr}, \code{\_tax\_rate}, \code{\_abs\_capex} --- and no builtins, with a
+missing operand resolving to \code{None} so a partial input yields \code{None}
+rather than an exception. A result that is \code{NaN} or infinite is dropped.
+
+\subsection{Point-in-time context and period joins}
+Ratios that mix flows with market data or prior-period values are assembled with
+care. Market capitalization is computed point-in-time as
+$\text{price}(\text{period\_end})\times\text{shares}$; year-over-year and multi-year
+formulas join the correct prior annual period ($\text{prev}$, $3y$, $5y$) via
+\code{*\_prev} / \code{*\_3y} / \code{*\_5y} operands resolved against the entity's
+own annual history. A handful of ``special'' metrics (momentum, volatility) come
+from the price/market path rather than the fundamentals formulas. Each metric row
+stores its \code{formula}, value, currency, \code{metric\_type}, category,
+importance, unit type, and a \code{fallback\_applied} flag.
+
+\section{International equities}
+Non-US/JP equities follow a parallel, lighter path
+(\code{metrics/compute\_intl.py}) that computes the same metric ids from
+Yahoo-sourced fundamentals (\code{fact\_yahoo\_*}) into \code{fact\_metrics\_intl}.
+It reuses the formula registry where the inputs are available and degrades where
+they are not, so the screener and quant panels can include international names on
+the same metric vocabulary.
+
+%======================================================================
+\part*{Part V\quad Reconciliation and validation}
+\addcontentsline{toc}{section}{Part V\quad Reconciliation and validation}
+
+\section{The reconciliation layer}
+\label{sec:recon}
+\emph{Code:} \code{metrics/recon.py} $\to$ \code{fact\_metrics\_recon\_\{us,jp\}}.
+Reconciliation re-expresses every computed metric with its actual inputs and traces
+each input back to the raw source. For a metric row it records:
+
+\begin{center}\small
+\begin{tabular}{@{}>{\ttfamily\footnotesize\color{navy}}l p{9.3cm}@{}}
+\toprule
+\normalfont\tabhead{Column} & \normalfont\tabhead{Content} \\
+\midrule
+formula              & The symbolic formula, e.g.\ \code{\_div(free\_cash\_flow, market\_capitalization)}. \\
+formula\_with\_values & The same formula with each operand substituted by its value and name, e.g.\ \code{\_div(1.84e10 [free\_cash\_flow], 2.7e12 [market\_capitalization])}. \\
+input\_values        & The resolved numeric value of every operand (\code{None} where missing). \\
+source\_line\_items  & The standardized line items the operands resolved to. \\
+source\_concept\_ids & The raw XBRL concepts behind those line items. \\
+source\_filing\_ids  & The filings those facts came from. \\
+raw\_trace           & Per-operand records: line item, value, source concept, filing, form, filed date, concept path, period role (current / prev / 3y / 5y), and (JP) context. \\
+trace\_quality       & A tier describing how completely the metric traces to source (below). \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Trace quality tiers}
+Each reconciled metric is graded by how fully its inputs trace to filed source:
+
+\begin{center}\small
+\begin{tabular}{@{}>{\ttfamily\color{navy}}l p{9.8cm}@{}}
+\toprule
+\normalfont\tabhead{trace\_quality} & \normalfont\tabhead{Meaning} \\
+\midrule
+full\_source\_trace       & Every operand resolves to a filed source fact. \\
+partial\_computed\_inputs & Some operands are themselves derived (L1) rather than filed; values are present. \\
+partial\_missing\_inputs  & One or more operands are missing (the metric may still compute from the rest). \\
+computed\_only            & Inputs exist as values but none resolve to a source fact (fully derived). \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+To build the trace, recon reconstructs the same L1 line-item time series the
+metrics stage used, resolves each formula token to its period-appropriate source
+(current vs.\ \code{prev}/\code{3y}/\code{5y}), and de-duplicates the resulting
+source records. The build is entity-chunked to bound memory, and has a freshness
+gate so it is skipped when the recon table already covers the metrics table.
+
+\begin{modelbox}{Worked example — free cash flow yield}
+\small
+For one entity-period, \code{free\_cash\_flow\_yield}$=$\code{\_div(free\_cash\_flow,
+market\_capitalization)}. Recon records:
+\begin{itemize}\setlength{\itemsep}{1pt}
+  \item \code{formula\_with\_values}: \code{\_div(1.84e10 [free\_cash\_flow], 2.70e12 [market\_capitalization])}
+  \item \code{free\_cash\_flow} is itself L1 (\code{cash\_flow\_from\_operations $-$ |capital\_expenditures|}); its operands trace to the filed \code{us-gaap:NetCashProvidedByUsedInOperatingActivities} and \code{us-gaap:PaymentsToAcquirePropertyPlantAndEquipment} concepts in a specific 10-K filing.
+  \item \code{market\_capitalization} is computed point-in-time from price $\times$ shares.
+  \item \code{trace\_quality}: \code{partial\_computed\_inputs} --- the fundamentals trace to source, but market cap is a derived price$\times$shares quantity, not a filed fact.
+\end{itemize}
+Every figure the committee cites can thus be unfolded to the filings and concepts
+underneath it.
+\end{modelbox}
+
+\section{Validation and quality gates}
+\label{sec:validate}
+\emph{Code:} \code{quality/validate.py}. A compact validation summary is produced
+per jurisdiction, spanning the whole pipeline:
+
+\begin{itemize}
+  \item \textbf{Layer counts} --- rows, entities, and distinct
+        concepts/line-items/metrics at each of the raw, standardized, metric, and
+        recon layers, so shrinkage or gaps between layers are visible at a glance.
+  \item \textbf{Master quality} --- hard gates on the company master
+        (\code{dim\_company\_\{us,jp\}}): e.g.\ US excludes ETFs/ETNs, funds/trusts,
+        and non-operating SIC codes; JP enforces primary-ticker format, ISIN
+        format, security-code/ticker consistency, and ticker-link integrity.
+        A failed gate raises rather than silently shipping bad master data.
+  \item \textbf{Source and XBRL state} --- per-source download/extract/parse
+        progress and parse-error counts from \code{source\_filing\_state}, including
+        US XBRL linkbase (cal/pre/def/lab) acquisition status.
+  \item \textbf{Structural sparsity} --- coverage of the structural columns
+        (statement type, parent/root, presentation order, weights) that graph
+        closure depends on.
+  \item \textbf{Recent runs} --- the last pipeline stage runs with row-in/row-out
+        counts and errors, from \code{pipeline\_stage\_run}.
+\end{itemize}
+
+\section{How the standardized layer feeds the application}
+The application reads only downstream of this pipeline. The committee's evidence
+engine reads standardized fundamentals and metrics; the quant desk builds its panel
+from \code{fact\_metrics\_*}; the WACC and factor models read the factor loadings
+derived from prices. The committee also ships a read-only \emph{data-quality agent}
+that scans exactly the five layers this document describes --- raw, standardized,
+metrics, recon, and a cross-check against an independent source --- reports layer
+scores and severity-ranked findings, and (in the mapping-check path) surfaces
+raw concepts for an entity that went unmapped or resolved to an incompatible
+sector, routing any proposed mapping change to a review queue rather than mutating
+the governed table. The reconciliation trace of \S\ref{sec:recon} is what lets that
+agent, and any analyst, unfold a headline number to the filings beneath it.
+
+\vfill
+\begin{center}\small\color{muted}
+The standardized layer is the contract between heterogeneous filings and a single,
+auditable analytical vocabulary. Every number the application shows can be traced
+to the filing it came from, or is explicitly marked as derived.
+\end{center}
+
+\end{document}
