@@ -1,214 +1,361 @@
-\documentclass[11pt,a4paper]{article}
+\documentclass[11pt]{article}
+\usepackage{mzqastyle}
+\setrunningtitle{AI Analyst — System Architecture}
 
-% ---------------------------------------------------------------- packages
-\usepackage[margin=2.2cm]{geometry}
-\usepackage[T1]{fontenc}
-\usepackage{lmodern}
-\usepackage[scaled=0.92]{helvet}
-\renewcommand{\familydefault}{\sfdefault}
-\usepackage{xcolor}
-\usepackage{tikz}
-\usetikzlibrary{shapes.geometric, arrows.meta, positioning, calc, fit, backgrounds}
-\usepackage{booktabs}
-\usepackage{array}
-\usepackage{listings}
-\usepackage{enumitem}
-\usepackage{titlesec}
-\usepackage{fancyhdr}
-\usepackage{parskip}
-\usepackage{hyperref}
-
-% ---------------------------------------------------------------- palette
-\definecolor{navy}{HTML}{2F4D73}
-\definecolor{navytwo}{HTML}{476D99}
-\definecolor{muted}{HTML}{6F7890}
-\definecolor{border}{HTML}{DDD8CD}
-\definecolor{bordersoft}{HTML}{EEECE5}
-\definecolor{panel}{HTML}{FBFAF7}
-\definecolor{pageb}{HTML}{F5F4F0}
-\definecolor{green}{HTML}{16A34A}
-\definecolor{red}{HTML}{DC2626}
-\definecolor{amber}{HTML}{F59E0B}
-
-\hypersetup{colorlinks=true, linkcolor=navy, urlcolor=navytwo, citecolor=navy,
-  pdftitle={AI\_Analyst -- Investment Committee}, pdfauthor={MZQA}}
-
-% ---------------------------------------------------------------- headings
-\titleformat{\section}{\Large\bfseries\color{navy}}{\thesection}{0.6em}{}
-\titleformat{\subsection}{\large\bfseries\color{navytwo}}{\thesubsection}{0.6em}{}
-\titlespacing*{\section}{0pt}{14pt}{6pt}
-\titlespacing*{\subsection}{0pt}{10pt}{4pt}
-
-\pagestyle{fancy}
-\fancyhf{}
-\renewcommand{\headrulewidth}{0.4pt}
-\renewcommand{\footrulewidth}{0pt}
-\fancyhead[L]{\footnotesize\color{muted}AI\_Analyst — Investment Committee}
-\fancyhead[R]{\footnotesize\color{muted}\leftmark}
-\fancyfoot[C]{\footnotesize\color{muted}\thepage}
-
-% ---------------------------------------------------------------- listings
-\lstdefinestyle{mzqa}{
-  basicstyle=\ttfamily\footnotesize,
-  keywordstyle=\color{navy}\bfseries,
-  commentstyle=\color{muted}\itshape,
-  stringstyle=\color{green},
-  backgroundcolor=\color{panel},
-  frame=single, rulecolor=\color{border},
-  breaklines=true, showstringspaces=false,
-  columns=fullflexible, xleftmargin=8pt, framexleftmargin=4pt,
-  aboveskip=8pt, belowskip=8pt, keepspaces=true, tabsize=2
-}
-\lstset{style=mzqa}
-\newcommand{\code}[1]{\texttt{\small #1}}
-
-% ---------------------------------------------------------------- tikz styles
-\tikzset{
-  term/.style={draw=navy, fill=navy, text=white, rounded corners=9pt, align=center,
-    font=\small\bfseries, minimum height=8mm, minimum width=18mm, inner sep=3pt},
-  proc/.style={draw=border, fill=panel, text=navy, rounded corners=2pt, align=center,
-    font=\small, minimum height=9mm, minimum width=30mm, inner sep=4pt},
-  llm/.style={draw=navytwo, fill=navy!10, text=navy, rounded corners=2pt, align=center,
-    font=\small, minimum height=9mm, minimum width=24mm, inner sep=4pt},
-  data/.style={draw=amber!80!black, fill=amber!18, text=navy!90, align=center,
-    font=\footnotesize, minimum height=8mm, inner sep=4pt},
-  dec/.style={draw=navy, fill=white, text=navy, diamond, aspect=2.3, align=center,
-    font=\footnotesize\itshape, inner sep=1pt, minimum width=20mm},
-  arr/.style={-{Stealth[length=2.2mm]}, draw=muted, semithick},
-  lbl/.style={font=\scriptsize\itshape, text=muted, fill=white, inner sep=1.2pt},
-}
-
-% ================================================================ document
 \begin{document}
 
-% ---------------------------------------------------------------- title page
-\begin{titlepage}
-\centering
-\vspace*{2.4cm}
-{\color{muted}\Large\bfseries MZQA}\\[6pt]
-{\color{muted}\normalsize\uppercase{\itshape Standalone application documentation}}\\[2.4cm]
-{\color{navy}\Huge\bfseries AI\_Analyst}\\[10pt]
-{\color{navytwo}\LARGE Multi-agent Investment Committee}\\[1.4cm]
-\begin{minipage}{0.8\textwidth}
-\centering\color{muted}\normalsize
-A self-contained equity-research application that runs a dialectical LangGraph
-tribunal (Bull\,·\,Bear\,·\,Forensic Auditor\,$\rightarrow$\,Lead\,$\rightarrow$\,memo) over a single
-stock, a GICS industry, or an AI-defined screen, on top of a deterministic
-valuation engine and a two-tier DeepSeek (LangChain) reasoning layer.
-\end{minipage}\\[2.6cm]
-{\color{muted}\small Architecture, setup, and LangChain / LangGraph workflow reference}\\[4pt]
-{\color{muted}\small Generated 5 July 2026}
-\vfill
-\end{titlepage}
+\mzqatitlepage
+  {Standalone application documentation}
+  {AI Analyst}
+  {System Architecture \& Operations}
+  {AI Analyst is a self-contained equity-research application that runs a
+   dialectical, multi-agent investment committee over a deterministic valuation
+   engine, a machine-learned quantitative desk, and a read-only fundamentals
+   warehouse. This volume documents \emph{how the application is built and run}:
+   the service topology, the LangGraph committee (its prepare/debate split, the
+   Advocate\,·\,Challenger\,·\,Auditor tribunal and sector specialists, and the
+   Lead synthesis), the multi-provider LLM layer, the screener and idea tools, the
+   quant desk, the REST surface, and setup.
 
-\tableofcontents
-\thispagestyle{empty}
+   \vspace{8pt}
+   \textit{Companion volumes:} \emph{Quantitative \& ML Models},
+   \emph{qlib Integration}, and \emph{SEC \& EDINET Metrics Mapping \&
+   Reconciliation}.}
+  {System Architecture \& Operations \quad·\quad Generated 31 July 2026}
+
+\mzqatoc
 \clearpage
 
-% ================================================================ 1. Overview
+%======================================================================
 \section{Overview}
 
-\textbf{AI\_Analyst} is the investment-committee feature of the MZQA Equity Terminal,
-carved out into a self-contained application that can run on its own. It carries all the
-code it needs; the one thing it does \emph{not} carry is the market/fundamentals data —
-it connects to the existing, read-only PostgreSQL \code{xbrl\_sec} warehouse produced by
-the data pipeline.
+\textbf{AI Analyst} is the investment-committee application of the MZQA equity
+platform, carved out to run on its own. It carries all the code it needs; the one
+thing it does \emph{not} carry is the market and fundamentals data --- it connects
+to a pre-built, read-only PostgreSQL warehouse (the \code{xbrl\_sec} data layer,
+schema \code{sec}) produced by the ingestion pipeline documented separately.
 
-The application exposes three ways to run the committee:
+The application turns a question --- \emph{``what is this worth, and what should I
+expect from it?''} --- into a structured, evidence-anchored answer. It exposes
+several ways to run:
 
-\begin{itemize}[leftmargin=1.4em, itemsep=2pt]
-  \item \textbf{Single stock} — the full tribunal plus an institutional report for one ticker.
-  \item \textbf{Industry (GICS)} — one relative-value verdict ranking the constituents of a
-        GICS sector or industry group.
-  \item \textbf{AI screen} — a natural-language screen, plus a one-click \emph{Value + Sentiment}
-        agent that scans for interesting, cheap stocks and overlays management tone read from
-        each name's MD\&A.
+\begin{itemize}
+  \item \textbf{Single-stock committee} --- the full tribunal plus an
+        institutional report for one ticker.
+  \item \textbf{Group / industry verdict} --- one relative-value deliberation that
+        ranks the constituents of a GICS sector or an ad-hoc set of names.
+  \item \textbf{Idea generation} --- a deterministic screener, a natural-language
+        (LLM) screen, and a one-click \emph{value $+$ sentiment} scanner.
+  \item \textbf{Quant desk} --- a machine-learned return forecast, a forward
+        covariance, and portfolio optimization, exposed as its own tab.
 \end{itemize}
 
-\subsection{Technology stack}
+\begin{specbox}
+\tabhead{Technology stack.}
+\smallskip
 
-\begin{center}\small
 \begin{tabular}{@{}>{\bfseries\color{navy}}l l@{}}
-\toprule
-Frontend      & Next.js 14, React 18, TypeScript, Tailwind CSS, Radix UI \\
-Backend       & FastAPI (async), Uvicorn; committee runs on worker threads \\
-Orchestration & LangGraph (the committee state machine) \\
-LLM           & DeepSeek only — \code{deepseek-reasoner} (narrative) + \code{deepseek-chat} (structured), via LangChain \\
-Data layer    & \code{xbrl\_sec} package; PostgreSQL (schema \code{sec}), read-only \\
-Numerics      & pandas, numpy, scipy (deterministic valuation / WACC / comps) \\
-\bottomrule
+Frontend      & Next.js 14, React 18, TypeScript, Tailwind CSS (port 3027; REST only) \\
+Backend       & FastAPI (async), Uvicorn (port 8027); blocking work on worker threads \\
+Orchestration & LangGraph \code{StateGraph} --- the committee state machine \\
+LLM layer     & 5 providers (DeepSeek, OpenAI, Anthropic, Moonshot, Gemini), chosen per request \\
+Quant layer   & Microsoft \code{qlib} (LightGBM, scikit-learn, cvxpy) --- lean in-process embed \\
+Data layer    & read-only PostgreSQL \code{xbrl\_sec} warehouse (schema \code{sec}) \\
+Numerics      & pandas, numpy, scipy (deterministic valuation, WACC, comps) \\
 \end{tabular}
-\end{center}
+\end{specbox}
 
-% ================================================================ 2. Architecture
+Three backend packages carry the logic: \code{ai\_analyst/committee} (the tribunal
+graph, valuation, and evidence assembly), \code{api} (the REST routers and the
+\code{api/quant} modeling layer), and \code{xbrl\_sec} (data access, the
+macro-cycle models, and the LLM client).
+
+%======================================================================
 \section{System architecture}
 
-The frontend is a thin client: it collects inputs and renders results. All financial logic
-and every LLM call live in the backend. The backend is stateless with respect to the app —
-its only persistent dependency is the shared Postgres warehouse; user-owned state (custom
-analyst types) is kept client-side in the browser.
+The frontend is a thin client: it collects inputs and renders results. All
+financial logic and every LLM call live in the backend. The backend is stateless
+with respect to the application --- its only persistent dependency is the shared
+warehouse; user-owned state (custom analyst types, provider API keys) is kept
+client-side in the browser.
 
 \begin{figure}[h]
 \centering
 \begin{tikzpicture}[node distance=8mm]
-  % Browser zone
-  \node[proc, minimum width=34mm, align=left] (tabs) {\textbf{Committee UI (tabs)}\\[2pt]
-    \scriptsize$\bullet$ Single stock\\\scriptsize$\bullet$ Industry (GICS)\\\scriptsize$\bullet$ AI screen};
-  \node[proc, below=6mm of tabs, minimum width=34mm, align=left, fill=navy!5] (roster)
-    {\scriptsize Analyst roster + DeepSeek key\\\scriptsize(localStorage / sessionStorage)};
+  % Browser
+  \node[proc, minimum width=36mm, align=left] (tabs) {\textbf{Committee UI (views)}\\[2pt]
+    \scriptsize$\bullet$ Single stock\\\scriptsize$\bullet$ Group / industry\\\scriptsize$\bullet$ Ideas (screen · scan)\\\scriptsize$\bullet$ Quant desk};
+  \node[proc, below=6mm of tabs, minimum width=36mm, align=left, fill=navy!5] (vault)
+    {\scriptsize Analyst roster $+$ provider keys\\\scriptsize(browser localStorage / sessionStorage)};
   \begin{scope}[on background layer]
-    \node[draw=border, rounded corners, fill=pageb, fit=(tabs)(roster), inner sep=7pt,
-      label={[font=\small\bfseries, text=navy]above:Browser — Next.js}] (web) {};
+    \node[zone, fit=(tabs)(vault), label={[zonelbl]above:Browser — Next.js}] (web) {};
   \end{scope}
 
-  % Backend zone
-  \node[proc, right=34mm of tabs, minimum width=40mm, align=left, yshift=-2mm] (routers)
+  % Backend
+  \node[proc, right=32mm of tabs, minimum width=40mm, align=left, yshift=-2mm] (routers)
     {\textbf{FastAPI routers}\\[2pt]
-     \scriptsize meta · sector · screener\\\scriptsize screener\_agent\\\scriptsize ai\_committee\\\scriptsize ai\_committee\_group};
+     \scriptsize meta · screener · screener\_agent\\\scriptsize ai\_committee (+group)\\\scriptsize quant · prices · kpis · fx · llm};
   \node[llm, below=7mm of routers, minimum width=40mm, align=left] (engine)
-    {\textbf{Committee engine}\\[2pt]\scriptsize LangGraph tribunal · valuation\\\scriptsize group · value+sentiment};
+    {\textbf{Committee \& quant engine}\\[2pt]\scriptsize LangGraph tribunal · valuation\\\scriptsize qlib alpha / risk / optimize};
   \begin{scope}[on background layer]
-    \node[draw=border, rounded corners, fill=pageb, fit=(routers)(engine), inner sep=7pt,
-      label={[font=\small\bfseries, text=navy]above:Backend — FastAPI}] (be) {};
+    \node[zone, fit=(routers)(engine), label={[zonelbl]above:Backend — FastAPI}] (be) {};
   \end{scope}
 
-  % External zone
-  \node[data, right=30mm of routers, minimum width=26mm] (pg)
-    {\textbf{PostgreSQL}\\\scriptsize \code{xbrl\_sec} (read-only)\\\scriptsize schema \code{sec}};
-  \node[data, below=12mm of pg, minimum width=26mm, fill=navy!8, draw=navytwo]
-    (ds) {\textbf{DeepSeek API}\\\scriptsize reasoner + chat};
+  % External
+  \node[store, right=30mm of routers, minimum width=26mm] (pg)
+    {\textbf{PostgreSQL}\\\scriptsize \code{xbrl\_sec}\\\scriptsize read-only · schema \code{sec}};
+  \node[data, below=13mm of pg, minimum width=26mm, fill=navy!8, draw=navytwo]
+    (ds) {\textbf{LLM providers}\\\scriptsize 5, per request};
   \begin{scope}[on background layer]
-    \node[draw=border, rounded corners, fill=pageb, fit=(pg)(ds), inner sep=7pt,
-      label={[font=\small\bfseries, text=navy]above:External}] (ext) {};
+    \node[zone, fit=(pg)(ds), label={[zonelbl]above:External}] (ext) {};
   \end{scope}
 
   \draw[arr] (web.east) -- node[lbl, above]{HTTPS / JSON} (be.west);
   \draw[arr] (routers.east) -- node[lbl, above]{asyncpg} (pg.west);
   \draw[arr] (engine.east) -- node[lbl, below, pos=0.55]{psycopg2 · httpx} (ds.west);
 \end{tikzpicture}
-\caption{High-level architecture. The browser talks only to the backend; the backend holds
-all financial logic and is the sole client of Postgres and DeepSeek.}
+\caption{High-level architecture. The browser talks only to the backend; the
+backend holds all financial logic and is the sole client of Postgres and the LLM
+providers. The user's provider key travels per request and is never persisted
+server-side.}
 \end{figure}
 
 \subsection{Repository layout}
 \begin{lstlisting}
 AI_Analyst/
 |- backend/
-|  |- requirements.txt        # lean runtime deps (no torch/dash); full set in requirements-full.txt
-|  |- api/                     # FastAPI: main.py (trimmed) + routers + db + settings
-|  |- ai_analyst/committee/    # LangGraph tribunal, valuation, group.py, screener agent logic
-|  \- xbrl_sec/                # data layer (DB, LLM client, MD&A, news) - read path only
+|  |- llm_providers.py         # 5-provider registry (stdlib-only, sys.path root)
+|  |- api/                     # FastAPI: main.py + routers + db + api/quant modeling
+|  |- ai_analyst/committee/    # LangGraph tribunal, valuation, group, evidence
+|  \- xbrl_sec/                # data layer (DB, LLM client, macro cycle, MD&A, news)
 |- frontend/                   # Next.js 14 app - the tabbed committee UI
-|- docs/                       # this document
+|- docs/                       # this document set
 |- start_committee.bat         # one-click launcher (backend :8027 + frontend :3027)
 \- .env.example                # config template (defaults work for a local Postgres)
 \end{lstlisting}
 
-% ================================================================ 3. Setup
+%======================================================================
+\section{The investment committee (LangGraph)}
+
+The committee is a \code{StateGraph} over a single \code{InvestmentCommitteeState}
+(a \code{TypedDict}). It splits into a \emph{prepare} phase and a \emph{debate}
+phase. A deterministic gate runs \emph{before} any LLM, so unanalyzable data never
+reaches the agents. If the gate passes, a deterministic engine assembles all the
+numbers and the evidence nodes attach context; only then does the dialectical
+tribunal argue over --- and tilt assumptions on --- that fixed evidence. The Lead
+synthesizes a probability-weighted fair value and decides whether another debate
+round is warranted (capped at three).
+
+\begin{keybox}[Why the split matters]
+The prepare phase is \emph{provider-independent}: the deterministic packet, the
+macro/news/institutional evidence, the data-quality report, and the qlib quant
+signals are all computed once. This lets several LLM providers debate the
+\emph{same} prepared evidence concurrently, and keeps every figure the tribunal
+cites reproducible.
+\end{keybox}
+
+\begin{figure}[tp]
+\centering
+\begin{tikzpicture}[node distance=5mm and 7mm,
+    ev/.style={proc, minimum width=29mm, font=\sffamily\scriptsize},
+    tb/.style={llm, minimum width=26mm}]
+  \node[term] (start) {START};
+  \node[proc, below=of start] (comp) {Completeness check};
+  \node[proc, below=of comp] (dq) {Data-quality (DQ) validation};
+  \node[dec, below=6mm of dq] (gate) {route};
+  \node[proc, right=20mm of gate, fill=red!8, draw=red!60] (err) {Error terminator};
+  \node[term, below=6mm of err, fill=muted, draw=muted] (endE) {END};
+  \node[proc, below=11mm of gate, align=center] (engine)
+    {Financial-analysis engine\\ {\scriptsize\itshape WACC · comps · SOTP · cash-flow · reverse-DCF}};
+
+  \node[ev, below=13mm of engine, xshift=-52mm] (news) {News \& macro};
+  \node[ev, below=13mm of engine, xshift=-17mm] (inst) {13F ownership};
+  \node[ev, below=13mm of engine, xshift=17mm] (dqa) {DQ agent};
+  \node[ev, below=13mm of engine, xshift=52mm] (quant) {Quant signals};
+  \begin{scope}[on background layer]
+    \node[zone, fit=(engine)(news)(inst)(dqa)(quant), inner sep=7pt] (prep) {};
+  \end{scope}
+  \node[anchor=south west, font=\sffamily\scriptsize\itshape, text=steel]
+    at ([yshift=1pt]prep.north west) {prepare phase — provider-independent, parallel evidence};
+
+  \node[tb, below=16mm of news] (adv) {Advocate};
+  \node[tb, right=of adv] (chl) {Challenger};
+  \node[tb, right=of chl] (aud) {Auditor};
+  \node[tb, right=of aud, dashed, fill=navy!4] (spec) {Specialist(s)};
+  \begin{scope}[on background layer]
+    \node[draw=navytwo, dashed, rounded corners, fill=navy!4,
+      fit=(adv)(chl)(aud)(spec), inner sep=6pt] (trib) {};
+  \end{scope}
+  \node[anchor=south west, font=\sffamily\scriptsize\itshape, text=navytwo]
+    at ([yshift=1pt]trib.north west) {Tribunal — parallel, macro-weighted};
+
+  \node[tb, below=11mm of trib.south, fill=navytwo!18, minimum width=42mm] (lead) {Lead analyst — synthesis};
+  \node[dec, below=6mm of lead] (review) {review};
+  \node[tb, below=6mm of review, fill=navytwo!18, minimum width=42mm] (memo) {Memo generator (EN / DE)};
+  \node[term, below=5mm of memo] (endM) {END};
+
+  \draw[arr] (start) -- (comp);
+  \draw[arr] (comp) -- (dq);
+  \draw[arr] (dq) -- (gate);
+  \draw[arr] (gate) -- node[lbl, above]{stop} (err);
+  \draw[arr] (err) -- (endE);
+  \draw[arr] (gate) -- node[lbl, right]{proceed} (engine);
+  \draw[arr] (engine) -- (news); \draw[arr] (engine) -- (inst);
+  \draw[arr] (engine) -- (dqa); \draw[arr] (engine) -- (quant);
+  \draw[arr] (prep.south) -- (trib.north);
+  \draw[arr] (trib.south) -- (lead);
+  \draw[arr] (lead) -- (review);
+  \draw[arr] (review) -- node[lbl, right]{ready / round 3} (memo);
+  \draw[arr] (memo) -- (endM);
+  \draw[arr] (review.east) -- ++(4.2,0) |- node[lbl, pos=0.22, right]{another round ($\leq 3$)} (trib.east);
+\end{tikzpicture}
+\caption{Committee topology. The prepare phase gates on data, builds the
+deterministic packet, and fans out four evidence nodes; the debate phase runs the
+Advocate\,·\,Challenger\,·\,Auditor tribunal plus specialists, the Lead synthesis,
+and the bilingual memo.}
+\label{fig:graph}
+\end{figure}
+
+\subsection{Nodes}
+\begin{center}\small
+\begin{tabular}{@{}>{\ttfamily\color{navy}}l p{10.4cm}@{}}
+\toprule
+\normalfont\tabhead{Node} & \normalfont\tabhead{Role} \\
+\midrule
+completeness\_check      & Ticker resolves? Standardized fundamentals present for the requested years? Sets \code{is\_data\_complete} (a hard gate). \\
+dq\_validation           & Checks core accounting identities; sets \code{is\_dq\_passed} $+$ \code{dq\_errors}. Advisory by default. \\
+financial\_analysis\_engine & Deterministic packet: WACC, comps, SOTP, cash-flow/ROIC, reverse-DCF. No LLM. \\
+news\_macro / institutional & Parallel evidence: macro regime $+$ news sentiment; 13F ownership. \\
+data\_quality\_agent      & Read-only DQ report over the five data layers, folded into the evidence bundle. \\
+qlib\_signals            & Alpha expected return $+$ percentile, forward vol, factor exposures (prepare phase, shared). \\
+advocate / challenger / auditor & The built-in tribunal (LLM): argue their stance over the fixed evidence. \\
+\emph{specialist} nodes  & Built at runtime (e.g.\ Quality-of-Earnings Auditor, Quantitative Factor Analyst) $+$ user mandates. \\
+lead\_analyst            & Reconciles the debate, extracts scenarios, decides \code{decision\_ready}. \\
+memo\_generator          & Bilingual institutional memo (EN / DE). \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{The data-governance gate (advisory by default)}
+Completeness is always a hard stop --- with no fundamentals the engine cannot run.
+The accounting-identity DQ check, however, is \emph{advisory by default}: the
+committee proceeds and surfaces the findings as a warning. Strict blocking is
+opt-in via \code{config.dq\_enforce} (the UI's \emph{strict data-governance}
+toggle).
+
+\begin{lstlisting}[language=Python]
+def route_data_validation(state):
+    if not state.get("is_data_complete"):
+        return "terminate_error"                     # unanalyzable -> hard stop
+    if get_config(state).get("dq_enforce") and not state.get("is_dq_passed"):
+        return "terminate_error"                     # strict mode only
+    return "analyze_data"                            # advisory: proceed, warn later
+\end{lstlisting}
+
+The HTTP layer mirrors this: it returns \textbf{422} only when the data is
+incomplete or strict mode blocked the run; otherwise it returns \textbf{200} with a
+\code{dq\_warning} object the UI renders as an amber banner.
+
+%======================================================================
+\section{The multi-provider LLM layer}
+
+Every agent node routes through a provider-agnostic LLM layer built on a single
+registry (\code{llm\_providers.py}, stdlib-only). Five providers are supported and
+selected \emph{per request}; the user's API key travels with the request and is
+never persisted server-side.
+
+\begin{center}\small
+\begin{tabular}{@{}>{\bfseries\color{navy}}l l l@{}}
+\toprule
+\tabhead{Provider} & \tabhead{Wire dialect} & \tabhead{Notes} \\
+\midrule
+DeepSeek            & openai    & default provider \\
+OpenAI (ChatGPT)    & openai    & \\
+Moonshot (Kimi)     & openai    & reasoning model; thinking can be disabled to avoid empty completions \\
+Gemini (Google)     & openai    & via Google's OpenAI-compatibility endpoint \\
+Anthropic (Claude)  & anthropic & dedicated adapter on the official SDK (no OpenAI-compatible endpoint) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two wire dialects cover all five: the \code{openai} dialect serves
+\code{POST \{base\_url\}/chat/completions} with a uniform message/tool shape (a
+small capability record captures where sampling params, JSON mode, and the
+max-tokens field differ), and the \code{anthropic} dialect is a dedicated adapter.
+The layer is used two ways: a \emph{narrative} tier (plain-text theses and the
+memo) and a \emph{structured} tier (\code{with\_structured\_output} against
+Pydantic schemas for scenario / weight / verdict extraction). A host allowlist is
+the security boundary that stops a user-supplied \code{base\_url} from walking off
+with the key. Offline / no-key runs fall back to deterministic placeholders, so
+every deterministic path remains runnable and testable without any provider.
+
+%======================================================================
+\section{Screener, ideas, and the group verdict}
+
+The screener filters the US/JP universe on fundamentals (deterministic SQL) and
+offers a natural-language screen (LLM $\to$ filters). Three idea sub-features use
+the LLM layer differently:
+
+\begin{itemize}
+  \item \textbf{Value $+$ sentiment scan} --- one LLM call per name for MD\&A tone,
+        on the user's selected provider, blended with the qlib alpha and
+        regime-conditioned factor-IC weights into a $0$--$100$ interest score.
+  \item \textbf{Prompt screen} --- the prompt$\to$filters translation fans out
+        across every keyed provider; each surfaces a candidate set (the per-name
+        ``found by'' badges), and the union is ranked once.
+  \item \textbf{Group ranking} --- a deterministic quantitative composite
+        ($z$-scored P/E, EV/EBITDA, P/B, FCF yield, growth, margins). No LLM is
+        needed for the ranking; the LLM only writes the optional narrative, on the
+        selected provider.
+\end{itemize}
+
+For an industry or a screen, the group endpoint resolves the universe to a capped
+ticker set, builds the deterministic composite as a seed, and (when a key is
+present) refines it with a single structured verdict that attaches per-name stance
+and rationale.
+
+%======================================================================
+\section{The quant desk}
+
+The quant desk is a lean, in-process integration of \code{qlib}: a cross-sectional
+alpha model (return prediction), a factor-structured forward covariance, dual
+portfolio optimization (a native optimizer \emph{and} qlib's, selectable at
+runtime), and a walk-forward out-of-sample backtest with Fama--French
+benchmarking. It is exposed through a \code{/api/quant/*} router and a \emph{Quant}
+UI tab, and fed into the committee as the \code{qlib\_signals} evidence node and a
+Quantitative Factor Analyst specialist. The mathematics of each model is specified
+in the \emph{Quantitative \& ML Models} volume; its engineering integration in the
+\emph{qlib Integration} volume.
+
+%======================================================================
+\section{REST API}
+
+Base \code{http://127.0.0.1:8027}, all under \code{/api}; handlers offload blocking
+work to worker threads.
+
+\begin{center}\small
+\begin{tabular}{@{}>{\ttfamily\footnotesize\color{navy}}p{5.4cm} >{\ttfamily}c p{7.6cm}@{}}
+\toprule
+\normalfont\tabhead{Endpoint} & \normalfont\tabhead{Method} & \normalfont\tabhead{Purpose} \\
+\midrule
+/api/meta/filters                    & GET  & GICS sector / industry-group lists \\
+/api/screener/run                    & POST & Deterministic structured screen \\
+/api/screener/ai                     & POST & Natural language $\rightarrow$ filters \\
+/api/screener/agent/\allowbreak value-sentiment  & POST & Value $+$ sentiment scanner \\
+/api/ai/committee                    & POST & Single-stock committee (also \code{/prepare}, \code{/debate}, \code{/iterate}) \\
+/api/ai/committee/group              & POST & Group relative-value verdict \\
+/api/quant/\{backends, alpha, risk, optimize, backtest\} & --- & Quant desk (mathematics in the ML Models volume) \\
+/api/\{prices, kpis, company, fx, llm\}  & GET  & Market data, KPIs, company, FX, provider catalogue \\
+/api/healthz                         & GET  & Liveness $+$ DB check \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%======================================================================
 \section{Setup and running}
 
-The app works on defaults if a local Postgres \code{xbrl\_sec} database is running and the
-\code{PGPASSWORD} and \code{DEEPSEEK\_API\_KEY} user environment variables are set.
+The application works on defaults if a local Postgres \code{xbrl\_sec} database is
+running and the connection and (optionally) a provider key are configured.
 
 \begin{lstlisting}[language=bash]
 cd AI_Analyst
@@ -220,331 +367,50 @@ py -3 -m venv .venv
 # 2) Frontend deps
 cd frontend; npm install; cd ..
 
-# 3) Point at the existing Postgres + keys (once)
+# 3) Point at the existing Postgres + keys (once; keys can also be pasted in the UI)
 setx PGPASSWORD "your-postgres-password"
-setx DEEPSEEK_API_KEY "sk-your-key-here"   # optional; can also be pasted in the UI
+setx DEEPSEEK_API_KEY "sk-your-key-here"
 
 # 4) Run both services and open the browser
 .\start_committee.bat
 \end{lstlisting}
 
-A token-free, deterministic smoke test of the whole committee engine (no browser, no DeepSeek):
+A token-free, deterministic smoke test of the whole committee engine (no browser,
+no provider) runs the offline path:
 \begin{lstlisting}[language=bash]
 $env:PYTHONPATH="$PWD\backend"
 .\.venv\Scripts\python -m ai_analyst.committee.run --ticker MSFT --offline --no-news
 \end{lstlisting}
 
-\noindent\textbf{Note on ports.} The standalone launcher defaults to backend \code{:8027}
-and frontend \code{:3027}, separate from the MZQA Terminal defaults.
+\begin{notebox}[Ports]
+The standalone launcher defaults to backend \code{:8027} and frontend \code{:3027},
+separate from the parent platform's defaults. The backend must be started from
+\code{backend/} so \code{qlib} resolves; the quant desk pre-warms the alpha
+cross-section and the walk-forward backtest at startup, so the first user request
+is served from cache.
+\end{notebox}
 
-% ================================================================ 4. LangGraph
-\section{The committee workflow (LangGraph)}
-
-The committee is a \code{StateGraph} over a single \code{InvestmentCommitteeState}
-(\code{TypedDict}). A deterministic gate runs \emph{before} any LLM, so garbage data never
-reaches the agents. If the gate passes, a deterministic engine assembles all the numbers;
-only then does the dialectical tribunal argue over — and tilt assumptions on — that fixed
-evidence. The Lead synthesises a probability-weighted fair value and decides whether another
-debate round is warranted (capped at three).
-
-\begin{figure}[h]
-\centering
-\begin{tikzpicture}[node distance=6.5mm and 10mm]
-  \node[term] (start) {START};
-  \node[proc, below=of start] (comp) {Completeness check};
-  \node[proc, below=of comp] (dq) {Data-quality (DQ) validation};
-  \node[dec, below=8mm of dq] (gate) {route};
-  \node[proc, right=20mm of gate, fill=red!8, draw=red!60] (err) {Error terminator};
-  \node[term, below=7mm of err, fill=muted, draw=muted] (endE) {END};
-  \node[proc, below=11mm of gate, align=center] (engine)
-    {Financial analysis engine\\ {\scriptsize\itshape fundamentals · WACC · comps · SOTP}\\ {\scriptsize\itshape cash-flow · reverse-DCF (deterministic)}};
-  \node[proc, below=12mm of engine, xshift=-26mm] (news) {News + macro};
-  \node[proc, below=12mm of engine, xshift=26mm] (inst) {Institutional 13F};
-
-  \node[llm, below=18mm of engine, xshift=-34mm] (bull) {The Bull};
-  \node[llm, right=of bull] (bear) {The Bear};
-  \node[llm, right=of bear] (aud) {Forensic\\Auditor};
-  \node[llm, right=of aud, dashed, fill=navy!4] (extra) {Extra\\analyst(s)};
-  \begin{scope}[on background layer]
-    \node[draw=navytwo, dashed, rounded corners, fill=navy!4,
-      fit=(bull)(bear)(aud)(extra), inner sep=5pt,
-      label={[font=\scriptsize\itshape, text=navytwo]above:Tribunal — parallel, macro-weighted}] (trib) {};
-  \end{scope}
-
-  \node[llm, below=13mm of trib.south, fill=navytwo!18] (lead) {Lead analyst — synthesis};
-  \node[dec, below=8mm of lead] (review) {review};
-  \node[llm, below=8mm of review, fill=navytwo!18] (memo) {Memo generator (EN / DE)};
-  \node[term, below=of memo] (endM) {END};
-
-  \draw[arr] (start) -- (comp);
-  \draw[arr] (comp) -- (dq);
-  \draw[arr] (dq) -- (gate);
-  \draw[arr] (gate) -- node[lbl, above]{stop} (err);
-  \draw[arr] (err) -- (endE);
-  \draw[arr] (gate) -- node[lbl, right]{proceed} (engine);
-  \draw[arr] (engine) -- (news);
-  \draw[arr] (engine) -- (inst);
-  \draw[arr] (news.south) |- (trib.west);
-  \draw[arr] (inst.south) |- (trib.east);
-  \draw[arr] (trib.south) -- (lead);
-  \draw[arr] (lead) -- (review);
-  \draw[arr] (review) -- node[lbl, right]{ready / round 3} (memo);
-  \draw[arr] (memo) -- (endM);
-  \draw[arr] (review.east) -- ++(3.6,0) |- node[lbl, pos=0.24, right]{another round ($\leq 3$)} (trib.east);
-\end{tikzpicture}
-\caption{LangGraph committee topology. \emph{route} $=$ \code{route\_data\_validation};
-\emph{review} $=$ \code{route\_lead\_analyst\_review}. Extra analysts are added dynamically from
-\code{config.extra\_analysts} and join every debate round.}
-\label{fig:graph}
-\end{figure}
-
-\subsection{Nodes}
-\begin{center}\small
-\begin{tabular}{@{}>{\ttfamily\color{navy}}l p{10.6cm}@{}}
-\toprule
-\normalfont\bfseries\color{navy}Node & \normalfont\bfseries\color{navy}Role \\
-\midrule
-completeness\_check\_node       & Ticker resolves? Standardised fundamentals present for the requested years? Sets \code{is\_data\_complete}. \\
-dq\_validation\_node            & Checks core accounting identities; sets \code{is\_dq\_passed} + \code{dq\_errors}. Recon-flag warnings are advisory. \\
-financial\_analysis\_engine\_node & Deterministic packet: WACC, comps, SOTP, cash-flow / ROIC, reverse-DCF. No LLM. \\
-news\_macro\_node / institutional\_node & Parallel evidence: macro regime + news sentiment; 13F ownership. \\
-bull / bear / forensic\_auditor & Built-in tribunal agents (LLM). Argue their stance over the fixed evidence. \\
-\emph{extra} analyst nodes      & Built at runtime by \code{make\_extra\_analyst\_node} from user mandates. \\
-lead\_analyst\_node             & Reconciles the debate, extracts scenarios, decides \code{decision\_ready}. \\
-memo\_generator\_node           & Bilingual institutional memo (two plain-text calls). \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\subsection{The data-governance gate (advisory by default)}
-Completeness is always a hard stop — with no fundamentals the engine cannot run. The
-accounting-identity DQ check, however, is \emph{advisory by default}: the committee proceeds
-and surfaces the findings as a warning. Strict blocking is opt-in via
-\code{config.dq\_enforce=true} (the UI's \emph{Strict data-governance} toggle).
-
-\begin{lstlisting}[language=python]
-def route_data_validation(state):
-    if not state.get("is_data_complete"):
-        return "terminate_error"                     # unanalyzable -> hard stop
-    if get_config(state).get("dq_enforce") and not state.get("is_dq_passed"):
-        return "terminate_error"                     # strict mode only
-    return "analyze_data"                            # advisory: proceed, warn later
-\end{lstlisting}
-
-The HTTP layer mirrors this: it returns \textbf{422} only when the data is incomplete or strict
-mode blocked the run; otherwise it returns \textbf{200} with a \code{dq\_warning} object the UI
-renders as an amber banner.
-
-% ================================================================ 5. LangChain LLM
-\section{The LLM layer (LangChain / DeepSeek)}
-
-Every agent node routes through a two-tier DeepSeek layer built on
-\code{xbrl\_sec.llm.ChatDeepSeek} (a LangChain chat model). The split exists because the
-reasoning model is a thinking-mode model that does \emph{not} reliably emit structured tool
-output:
-
-\begin{itemize}[leftmargin=1.4em, itemsep=2pt]
-  \item \textbf{Reasoner} — \code{deepseek-reasoner}, called for plain-text narrative
-        (\code{llm.invoke(prompt).content}); used by Bull / Bear / Auditor / Lead theses and the memo.
-  \item \textbf{Structured} — \code{deepseek-chat} with \code{llm.with\_structured\_output(schema)};
-        used for scenario / weight / verdict extraction against Pydantic schemas.
-\end{itemize}
-
-Both tiers share a SQLite response cache (\code{setup\_llm\_cache}) and a bounded retry loop.
-The whole layer is short-circuited when \code{MZQA\_COMMITTEE\_DISABLE\_LLM=1} or no key is
-present, so the deterministic paths remain runnable and testable offline.
-
-\begin{figure}[h]
-\centering
-\begin{tikzpicture}[node distance=7mm and 14mm]
-  \node[proc, align=center] (node) {Committee node\\{\scriptsize\itshape Bull · Bear · Auditor · Lead · Memo}};
-  \node[dec, below=8mm of node] (off) {key set \&\\LLM enabled?};
-  \node[proc, left=20mm of off, fill=bordersoft, draw=muted] (ph)
-    {Deterministic\\placeholder};
-
-  \node[llm, below=13mm of off, xshift=-24mm] (reason)
-    {\textbf{Reasoner}\\{\scriptsize deepseek-reasoner}\\{\scriptsize\itshape .invoke $\rightarrow$ .content}};
-  \node[llm, below=13mm of off, xshift=24mm] (struct)
-    {\textbf{Structured}\\{\scriptsize deepseek-chat}\\{\scriptsize\itshape with\_structured\_output(schema)}};
-  \begin{scope}[on background layer]
-    \node[draw=navytwo, dashed, rounded corners, fill=navy!4,
-      fit=(reason)(struct), inner sep=6pt,
-      label={[font=\scriptsize\itshape, text=navytwo]above:xbrl\_sec.llm.ChatDeepSeek — SQLite cache · 3 retries + backoff}] (box) {};
-  \end{scope}
-
-  \node[data, below=12mm of box.south, minimum width=30mm] (out)
-    {Thesis text \quad / \quad Pydantic object};
-  \node[proc, right=16mm of struct, fill=navy!5, draw=navytwo, align=center] (ds)
-    {\scriptsize DeepSeek\\\scriptsize API (httpx)};
-
-  \draw[arr] (node) -- (off);
-  \draw[arr] (off) -- node[lbl, above]{no} (ph);
-  \draw[arr] (ph) |- (out);
-  \draw[arr] (off) -- node[lbl, left, pos=0.6]{narrative} (reason.north);
-  \draw[arr] (off) -- node[lbl, right, pos=0.6]{extraction} (struct.north);
-  \draw[arr] (reason.south) |- (out);
-  \draw[arr] (struct.south) |- (out);
-  \draw[arr, dashed] (struct) -- (ds);
-  \draw[arr, dashed] (ds) |- (reason);
-\end{tikzpicture}
-\caption{Two-tier DeepSeek layer used by every committee node. The reasoning tier produces
-narrative; the structured tier produces schema-validated JSON. Offline / no-key runs fall back
-to deterministic placeholders.}
-\label{fig:llm}
-\end{figure}
-
-% ================================================================ 6. Group
-\section{Group committee — relative-value verdict}
-
-For an industry or an AI screen the app runs \emph{one} committee deliberation over a set of
-names rather than a full per-stock tribunal $N$ times. The endpoint
-\code{POST /api/ai/committee/group} resolves the universe to a capped ticker set via the
-existing screener, builds a deterministic composite ranking as a seed, and (when a key is
-present) refines it with a single structured DeepSeek verdict.
-
-\begin{figure}[h]
-\centering
-\begin{tikzpicture}[node distance=6mm and 12mm]
-  \node[term] (req) {GroupRequest};
-  \node[dec, below=7mm of req] (mode) {input?};
-  \node[proc, left=14mm of mode, align=center] (tick) {explicit tickers\\{\scriptsize portfolio\_tickers}};
-  \node[llm, right=14mm of mode, align=center] (ai) {prompt $\rightarrow$ \code{screener\_ai}\\{\scriptsize DeepSeek $\rightarrow$ filters}};
-  \node[proc, below=8mm of mode] (uni) {GICS / filter universe};
-
-  \node[data, below=9mm of uni, minimum width=40mm] (run) {\code{screener\_run} $\rightarrow$ evidence table\\{\scriptsize Postgres: valuation · growth · margins (top $N\!\leq\!12$)}};
-  \node[proc, below=8mm of run] (det) {Deterministic composite ranking\\{\scriptsize\itshape z-scored cheapness + quality-growth}};
-  \node[dec, below=8mm of det] (haskey) {key \& online?};
-  \node[llm, right=20mm of haskey, align=center] (verdict) {Structured verdict\\{\scriptsize deepseek-chat}\\{\scriptsize\itshape thesis + per-name stance}};
-  \node[proc, below=9mm of haskey] (merge) {Merge stances / rationale};
-  \node[data, below=7mm of merge, minimum width=40mm] (resp) {GroupResponse\\{\scriptsize ranking · group memo · report HTML}};
-
-  \draw[arr] (req) -- (mode);
-  \draw[arr] (mode) -- node[lbl, above]{shortlist} (tick);
-  \draw[arr] (mode) -- node[lbl, above]{prompt} (ai);
-  \draw[arr] (mode) -- node[lbl, right]{sector} (uni);
-  \draw[arr] (tick) |- (run);
-  \draw[arr] (ai) |- (run);
-  \draw[arr] (uni) -- (run);
-  \draw[arr] (run) -- (det);
-  \draw[arr] (det) -- (haskey);
-  \draw[arr] (haskey) -- node[lbl, above]{yes} (verdict);
-  \draw[arr] (verdict) |- (merge);
-  \draw[arr] (haskey) -- node[lbl, right]{no (deterministic)} (merge);
-  \draw[arr] (merge) -- (resp);
-\end{tikzpicture}
-\caption{Group committee flow. The deterministic composite always runs (offline-safe); the LLM
-verdict, when available, reorders it and attaches per-name rationale.}
-\label{fig:group}
-\end{figure}
-
-% ================================================================ 7. Agent
-\section{Default agent — value + sentiment scanner}
-
-The AI-screen tab ships a one-click agent (\code{POST /api/screener/agent/value-sentiment})
-that surfaces interesting, cheap stocks and overlays sentiment mined from the MD\&A text in
-the XBRL filings. A cheap-plus-growing pre-filter (with fixed sanity bounds that drop
-mis-scaled warehouse rows) produces a shortlist; management tone is then scored on demand for
-each name and folded into a composite interest score.
-
-\begin{figure}[h]
-\centering
-\begin{tikzpicture}[node distance=6mm and 12mm]
-  \node[term] (req) {AgentRequest};
-  \node[proc, below=7mm of req, align=center] (filt)
-    {Preset filters + sanity bounds\\{\scriptsize\itshape P/E · FCF yield · rev growth · size}};
-  \node[data, below=8mm of filt, minimum width=44mm] (run)
-    {\code{screener\_run} $\rightarrow$ shortlist (top $N$ by market cap)};
-
-  \node[data, below left=11mm and 2mm of run, align=center] (mda)
-    {MD\&A text\\{\scriptsize fact\_mda\_sections\_*}};
-  \node[llm, below=8mm of mda, align=center] (tone)
-    {Tone via \code{chat\_json}\\{\scriptsize DeepSeek — concurrent}};
-  \node[data, below right=11mm and 2mm of run, align=center] (news)
-    {News sentiment\\{\scriptsize news\_summary — bonus}};
-
-  \node[proc, below=30mm of run] (score)
-    {Composite interest score\\{\scriptsize\itshape value + growth + MD\&A tone [+ news]}};
-  \node[data, below=8mm of score, minimum width=40mm] (resp)
-    {AgentResponse — ranked rows\\{\scriptsize score · metrics · tone chip · rationale}};
-
-  \draw[arr] (req) -- (filt);
-  \draw[arr] (filt) -- (run);
-  \draw[arr] (run) -- (mda);
-  \draw[arr] (run) -- (news);
-  \draw[arr] (mda) -- (tone);
-  \draw[arr] (tone) |- (score);
-  \draw[arr] (news) |- (score);
-  \draw[arr] (score) -- (resp);
-\end{tikzpicture}
-\caption{Value + sentiment agent. MD\&A tone carries the sentiment weight (broad coverage in
-JP; sparse in US $\approx$47 names); news is a best-effort bonus. Missing signals fall back to
-valuation + growth.}
-\label{fig:agent}
-\end{figure}
-
-% ================================================================ 8. Features
-\section{Feature summary}
-
-\begin{center}\small
-\begin{tabular}{@{}>{\bfseries\color{navy}}p{3.6cm} p{11cm}@{}}
-\toprule
-Explicit add-analyst & The roster has an \emph{Apply / Deploy analyst} button; deployed analysts
-  persist in browser \code{localStorage} and are sent as \code{config.extra\_analysts} on every run
-  (single / industry / screen). \\
-Advisory DQ gate & Runs proceed on data that fails an accounting identity, showing an amber
-  banner; \emph{Strict data-governance} restores the hard block. \\
-7-year DCF & Explicit forecast horizon is 7 years everywhere
-  (\code{dcf\_engine.DCF\_HORIZON\_YEARS}) — consolidated DCF, SOTP segments, sensitivity grid,
-  reverse-DCF. \\
-Group verdict & One relative-value deliberation over an industry / screen, ranked cheap
-  $\rightarrow$ expensive. \\
-Value+sentiment agent & One-click scan blending valuation, growth and MD\&A / news sentiment. \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\subsection{API reference}
-\begin{center}\small
-\begin{tabular}{@{}>{\ttfamily\color{navy}}l >{\ttfamily}c p{7.7cm}@{}}
-\toprule
-\normalfont\bfseries\color{navy}Endpoint & \normalfont\bfseries\color{navy}Method & \normalfont\bfseries\color{navy}Purpose \\
-\midrule
-/api/meta/filters                    & GET  & GICS sector / industry-group lists (tab dropdowns) \\
-/api/screener/meta                   & GET  & Filter-key catalogue \\
-/api/screener/run                    & POST & Deterministic structured screen \\
-/api/screener/ai                     & POST & Natural language $\rightarrow$ filters (DeepSeek) \\
-/api/screener/agent/value-sentiment  & POST & Default value + sentiment agent \\
-/api/ai/committee                    & POST & Single-stock committee \\
-/api/ai/committee/group              & POST & Group relative-value verdict \\
-/api/healthz                         & GET  & Liveness + DB check \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-% ================================================================ 9. Data
+%======================================================================
 \section{Data dependencies and notes}
 
-\begin{itemize}[leftmargin=1.4em, itemsep=3pt]
-  \item \textbf{Shared, read-only DB.} The committee reads standardized fundamentals, market
-        metrics, prices, GICS classification, 13F ownership, macro series, MD\&A and news from
-        the Postgres \code{xbrl\_sec} warehouse (schema \code{sec}). The sync path opens the
-        connection \code{default\_transaction\_read\_only=on}; the app never writes to it.
-  \item \textbf{App-owned state} (deployed analyst types) lives in browser \code{localStorage},
-        precisely because the warehouse is read-only.
-  \item \textbf{Lean dependencies.} \code{backend/requirements.txt} is trimmed to the committee
-        runtime path (no torch / dash / cvxpy); the original superset is kept as
-        \code{requirements-full.txt}.
-  \item \textbf{MD\&A coverage.} \code{fact\_mda\_sections\_us} currently covers $\approx$47
-        companies; Japan is far richer ($\approx$6\,855 rows). The agent degrades gracefully
-        where a name has no MD\&A or news.
-  \item \textbf{Latency.} A full single-stock committee run is minutes-scale (MSFT $\approx$166\,s
-        even in offline / deterministic mode); group and agent runs are seconds-scale.
+\begin{itemize}
+  \item \textbf{Shared, read-only warehouse.} The committee reads standardized
+        fundamentals, market metrics, prices, GICS classification, 13F ownership,
+        macro series, factor loadings, MD\&A, and news from the Postgres
+        \code{xbrl\_sec} warehouse (schema \code{sec}). The application never
+        writes to it. How that warehouse is built --- the raw-to-standardized
+        mapping, the metrics, and the reconciliation --- is the subject of the
+        \emph{SEC \& EDINET Metrics Mapping \& Reconciliation} volume.
+  \item \textbf{App-owned state.} Deployed analyst types and provider keys live in
+        the browser, precisely because the warehouse is read-only.
+  \item \textbf{Latency.} A full single-stock committee run is minutes-scale even
+        in offline / deterministic mode; group and scan runs are seconds-scale.
 \end{itemize}
 
 \vfill
-\begin{center}\footnotesize\color{muted}
-AI\_Analyst — carved out of the MZQA Equity Terminal. Deterministic valuation core;
-DeepSeek reasoning layer; LangGraph orchestration.
+\begin{center}\small\color{muted}
+AI Analyst --- a deterministic valuation core, a machine-learned quant desk, a
+multi-provider reasoning layer, and LangGraph orchestration.
 \end{center}
 
 \end{document}

@@ -1,0 +1,261 @@
+\documentclass[11pt]{article}
+\usepackage{mzqastyle}
+\setrunningtitle{AI Analyst — qlib Integration}
+
+\begin{document}
+
+\mzqatitlepage
+  {Engineering integration reference}
+  {qlib Integration}
+  {Return \& risk prediction, portfolio optimization, and score enhancement}
+  {AI Analyst embeds Microsoft \code{qlib} as a lean, in-process library to power
+   its quantitative desk: a machine-learned return forecast, a factor-structured
+   forward covariance, portfolio optimization, and a walk-forward backtest, with
+   the learned signal folded into the idea scanner and the investment committee.
+   This volume documents the \emph{engineering} of that integration --- the
+   lean-embed principle, the module map, the Postgres-to-qlib panel adapter, the
+   dual optimizer dispatcher, the committee and scanner wiring, the REST surface,
+   and operations. The \emph{mathematics} of each model is specified in the
+   \emph{Quantitative \& ML Models} volume.}
+  {qlib Integration \quad·\quad Generated 31 July 2026}
+
+\mzqatoc
+\clearpage
+
+%======================================================================
+\section{What the integration delivers}
+
+The quantitative desk adds a machine-learned layer on top of the deterministic
+valuation engine and the fundamentals warehouse:
+
+\begin{itemize}
+  \item \textbf{Return prediction} --- a cross-sectional LightGBM alpha model over
+        the monthly fundamentals panel, producing a per-name expected forward
+        return (the \code{mu} consumed by the optimizer and the scanner).
+  \item \textbf{Risk prediction} --- a factor-structured forward covariance
+        (\code{StructuredCovEstimator}), $\Sigma=F\,\Sigma_B\,F\tr+\diag(\mathbf d)$,
+        with its decomposition exposed to the enhanced-indexing optimizer.
+  \item \textbf{Portfolio optimization} --- both a native optimizer \emph{and}
+        qlib's optimizers, selectable at runtime.
+  \item \textbf{Score enhancement} --- the learned alpha plus regime-conditioned
+        factor-IC weights blended into the value $+$ sentiment interest score.
+  \item \textbf{Committee integration} --- a \code{quant\_signals} evidence node and
+        a Quantitative Factor Analyst specialist.
+  \item \textbf{REST $+$ UI} --- a \code{/api/quant/*} router and a \emph{Quant} tab.
+\end{itemize}
+
+Everything degrades gracefully: with no trained model, or with qlib or an optional
+dependency absent, each surface returns a defined fallback and the application runs
+unchanged.
+
+\begin{keybox}[The lean-embed principle]
+qlib's model, risk estimator, optimizers, and evaluation run as \emph{plain
+libraries} on a MultiIndex DataFrame the app builds from Postgres. The integration
+never uses qlib's expression engine, its \code{.bin} data provider, the Alpha158/360
+handlers, or the recorder/\code{qrun} workflow --- so there is no \code{qlib.init},
+no data-provider bootstrap, and no mlflow tracking backend. Only \code{lightgbm},
+\code{scikit-learn}, and \code{cvxpy} become hard new runtime dependencies.
+\end{keybox}
+
+\section{How qlib maps onto the desk's needs}
+
+\begin{center}\small
+\begin{tabular}{@{}>{\bfseries\color{navy}}l >{\ttfamily\footnotesize}p{5.4cm} >{\ttfamily\footnotesize}l@{}}
+\toprule
+\tabhead{Need} & \normalfont\tabhead{qlib capability used} & \normalfont\tabhead{Module} \\
+\midrule
+Return prediction      & LGBModel $+$ DatasetH $+$ DataHandlerLP.from\_df & api/quant/qlib\_alpha.py \\
+Risk prediction        & StructuredCovEstimator & api/quant/qlib\_risk.py \\
+Portfolio optimization & PortfolioOptimizer, EnhancedIndexingOptimizer & api/quant/qlib\_optimize.py \\
+Evaluation / backtest  & calc\_ic, risk\_analysis & api/quant/qlib\_backtest.py \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Module map}
+
+\begin{center}\small
+\begin{tabular}{@{}>{\ttfamily\footnotesize\color{navy}}l p{9.5cm}@{}}
+\toprule
+\normalfont\tabhead{File} & \normalfont\tabhead{Responsibility} \\
+\midrule
+qlib\_data.py     & Build the monthly cross-sectional feature/label panel from Postgres (reuses the regime-IC loaders and point-in-time alignment). \\
+qlib\_alpha.py    & \code{AlphaLGB} model (recorder-free), \code{train}/\code{predict}/\code{evaluate}, persistence, lazy cache, CLI. \\
+qlib\_risk.py     & \code{structured\_cov()} $\to$ annualized $\Sigma$ $+$ the $(F,\Sigma_B,\mathbf d)$ decomposition; sync price/returns loader. \\
+qlib\_optimize.py & \code{solve(optimizer, \dots)} dispatcher over the native $+$ five qlib backends $\to$ a uniform \code{PortfolioSolution}. \\
+qlib\_backtest.py & Walk-forward out-of-sample signal backtest scored with qlib \code{risk\_analysis}. \\
+alpha\_signal.py  & Central bridge: cached latest cross-section $+$ per-ticker expected returns (used by scanner, committee, router). \\
+ic\_weights.py    & Regime-conditioned factor-IC $\to$ per-family scoring weights. \\
+optimize.py / risk.py & Native SLSQP/MIP optimizer; sample / Ledoit--Wolf / FF structured covariance. \\
+routers/quant.py  & \code{/api/quant/\{backends,alpha,risk,optimize,backtest\}}. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[node distance=7mm and 10mm, font=\sffamily\footnotesize]
+  \node[store, minimum width=28mm] (pg) {Postgres\\\scriptsize \code{fact\_metrics\_*}};
+  \node[proc, right=of pg, minimum width=24mm] (panel) {qlib\_data\\\scriptsize build\_panel (PIT, $z$-scored)};
+  \node[llm, right=of panel, minimum width=27mm, align=left] (models)
+    {\textbf{qlib\_alpha} $\to\ \muv$\\[1pt]\textbf{qlib\_risk} $\to\ \Sigma$};
+  \node[llm, right=of models, minimum width=24mm] (opt) {qlib\_optimize\\\scriptsize native $|$ qlib $\to\ \wv$};
+  \node[data, right=of opt, minimum width=20mm] (sol) {Portfolio\\solution};
+
+  \node[proc, below=11mm of panel, minimum width=24mm] (bridge) {alpha\_signal\\\scriptsize cached cross-section};
+  \node[proc, below=11mm of models, minimum width=32mm, xshift=4mm] (scan) {scanner $+$ committee\\\scriptsize interest score · quant node};
+
+  \draw[arr] (pg) -- (panel);
+  \draw[arr] (panel) -- (models);
+  \draw[arr] (models) -- (opt);
+  \draw[arr] (opt) -- (sol);
+  \draw[arr] (panel) -- (bridge);
+  \draw[arr] (bridge) -- (scan);
+  \draw[arr] (models.south) to[out=-90,in=90] (scan.north);
+\end{tikzpicture}
+\caption{The lean qlib embed. One point-in-time panel feeds the alpha and risk
+models; the optimizer dispatcher consumes their $\muv$ and $\Sigma$; a cached bridge
+exposes the alpha to the scanner and committee.}
+\end{figure}
+
+\section{The panel adapter}
+\code{qlib\_data.build\_panel} produces a qlib-style MultiIndex frame --- rows
+$(\text{datetime},\text{instrument})$, columns
+$(\text{feature}\,|\,\text{label})$ --- consumed directly by
+\code{DataHandlerLP.from\_df}. Features are importance-ranked fundamentals from four
+families, cross-sectionally $z$-scored per month; the label is the forward 1m/3m
+return; fundamentals are aligned point-in-time ($\text{period\_end}+90\text{d}\to$
+month-end). This is the \emph{same} loader and alignment the regime-IC research
+uses, so the production forecast and the research signal share one lookahead-safe
+data path. The alpha model trains through the real qlib \code{DatasetH} pipeline;
+the \code{AlphaLGB} subclass attaches LightGBM's callbacks directly in \code{fit},
+so training runs with plain LightGBM and needs no \code{qlib.init} or tracking
+backend. Prediction runs the stored booster on any reindexed feature matrix.
+
+\section{Dual optimizer dispatch}
+\code{qlib\_optimize.solve(optimizer, tickers, mu, sigma, \dots)} dispatches to
+either backend family and returns a uniform \code{PortfolioSolution} (weights,
+annualized expected return / vol / Sharpe, factor exposures, diagnostics):
+
+\begin{center}\small
+\begin{tabular}{@{}>{\ttfamily\footnotesize\color{navy}}l p{5.0cm} p{5.0cm}@{}}
+\toprule
+\normalfont\tabhead{\ttfamily optimizer} & \normalfont\tabhead{Engine} & \normalfont\tabhead{Notes} \\
+\midrule
+native & \code{optimize.py} (SLSQP / cvxpy-MIP) & Full constraints: sector caps, vol cap, cardinality, turnover. \\
+qlib\_mvo / \_gmv / \_rp / \_inv & qlib \code{PortfolioOptimizer} & Mean-variance / min-variance / risk-parity / inverse-vol; long-only, fully invested. \\
+qlib\_enhanced\_indexing & qlib \code{EnhancedIndexingOptimizer} & Benchmark-relative tracking-error; consumes the \code{StructuredCovEstimator} decomposition. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Both families are fed the same annualized $\muv$ (alpha or historical mean) and
+$\Sigma$ (qlib-structured, Ledoit--Wolf, or sample). Neither is a default-only path
+--- both ship enabled and are chosen per request or from the UI selector.
+
+\section{Score enhancement: alpha $+$ regime-IC weights}
+The value $+$ sentiment interest score (\code{screener\_agent}) blends two learned
+inputs on top of the fundamental composite:
+
+\begin{enumerate}
+  \item \textbf{Normalized alpha} $v_\alpha$ --- the qlib model's expected return,
+        cross-sectionally normalized, as the dominant term (default weight $0.40$)
+        when the model covers the shortlist.
+  \item \textbf{Regime-IC family weights} --- the fundamental score budget
+        (value / growth) is re-split by how predictive each family has been
+        \emph{in the current macro regime} (\S\ref{sec:regime}), rather than by
+        fixed constants.
+\end{enumerate}
+
+When no trained model or IC data is available the score reduces exactly to the
+fixed-weight composite (guaranteed by test). Each row reports \code{alpha},
+\code{alpha\_percentile}, and a \code{score\_components} breakdown; the response
+carries a \code{scoring} block naming the weights and model actually used.
+
+\section{Where the macro-regime IC feeds forecasting}
+\label{sec:regime}
+The macro-cycle model (HMM / VAE) labels each month with a regime; the regime-IC
+engine then computes, \emph{conditioned on that regime}, the Spearman rank IC of
+every fundamental metric against forward returns, into
+\code{fact\_equity\_factor\_ic\_regime}. The one live consumption path in the desk
+is scoring: \code{ic\_weights.family\_weights} reads the latest regime's rows,
+aggregates per-metric $|\text{IC}|$ to family-level emphasis, and the scanner
+re-splits its fundamental budget accordingly --- so the interest score leans harder
+on whichever factor family the current regime says is most predictive.
+
+\begin{notebox}[Scope]
+The LightGBM alpha model itself is regime-\emph{agnostic}: it learns from factor
+\emph{values} (including momentum/volatility from the market-factor family), and
+the regime enters forecasting through the score weights, not as a model feature.
+The committee receives macro regime context from the macro node and the
+\code{quant\_signals} block, but not the factor-IC table directly.
+\end{notebox}
+
+\section{Committee integration}
+\begin{itemize}
+  \item \textbf{State} --- \code{InvestmentCommitteeState.quant\_signals} plus a
+        config toggle \code{enable\_quant\_signals}.
+  \item \textbf{Evidence node} --- \code{qlib\_signals\_node} runs in the
+        \emph{prepare} phase (once, shared across providers): the ticker's alpha
+        expected return, universe percentile, and model rank-IC, plus a peer-group
+        factor-risk read (forward vol, factor exposures, minimum-variance weight).
+        It auto-fans-out from the engine and auto-fans-in to every analyst, and
+        degrades to \code{available: false} on any error, so it never fails a run.
+  \item \textbf{Specialist} --- the Quantitative Factor Analyst reconciles the
+        statistical alpha/risk signals with the fundamental/DCF thesis and flags
+        alpha-vs-valuation disagreements.
+\end{itemize}
+
+\section{REST API and frontend}
+Router \code{api/routers/quant.py} (under \code{/api/quant}), all handlers
+offloading qlib work to worker threads:
+
+\begin{center}\small
+\begin{tabular}{@{}>{\ttfamily\color{navy}}l p{9.4cm}@{}}
+\toprule
+\normalfont\tabhead{Endpoint} & \normalfont\tabhead{Purpose} \\
+\midrule
+GET /backends   & Optimizer backends, risk models, alpha-model metadata. \\
+POST /alpha     & Expected returns for a universe (or the latest top-$N$ cross-section). \\
+POST /risk      & Forward covariance / volatility / factor exposures. \\
+POST /optimize  & Portfolio optimization; \code{optimizer} selects native or any qlib backend. \\
+POST /backtest  & Walk-forward out-of-sample signal backtest with qlib \code{risk\_analysis}. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The \emph{Quant} tab (\code{QuantView.tsx}) exposes an optimizer-backend selector,
+risk-model and $\mu$-source selectors, a live expected-returns table, an
+optimized-weights table, and a backtest panel.
+
+\section{Operations}
+
+\begin{itemize}
+  \item \textbf{qlib on Python 3.13.} No PyPI wheel exists for 3.13, so qlib is
+        built from a bundled clone and installed non-editable, so \code{import qlib}
+        resolves from any working directory (the C++ toolchain is required for the
+        build). Lean runtime deps are pinned in \code{backend/requirements.txt}
+        (\code{lightgbm}, \code{scikit-learn}, \code{cvxpy}, \code{ecos},
+        \code{dill}, \code{pyarrow}, \dots).
+  \item \textbf{Cold start / pre-warm.} The first alpha call for a jurisdiction
+        builds the cross-section panel from the warehouse and then caches it (TTL
+        via \code{QLIB\_ALPHA\_CACHE\_TTL}); the walk-forward backtest is cached
+        separately. Both are pre-warmed on startup so the first user request is
+        served from cache.
+  \item \textbf{Retraining.} The alpha model is (re)trained via the CLI:
+        \code{python -m api.quant.qlib\_alpha train --jurisdiction US}; artifacts
+        are persisted per jurisdiction and hot-reloaded on file mtime.
+  \item \textbf{Tests.} \code{backend/api/quant/tests/test\_quant.py} covers the
+        optimizer backends, the structured covariance, the exact scoring fallback,
+        the alpha blend, the IC re-split, and a DB-gated panel/train smoke test.
+\end{itemize}
+
+\vfill
+\begin{center}\small\color{muted}
+A lean, in-process qlib embed: one point-in-time panel, a learned alpha and a
+structured covariance, dual optimization, and a walk-forward backtest --- wired into
+the scanner and the committee, and degrading cleanly to the prior behavior wherever
+a model or dependency is absent.
+\end{center}
+
+\end{document}
