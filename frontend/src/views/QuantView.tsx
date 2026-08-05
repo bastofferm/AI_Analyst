@@ -20,6 +20,7 @@ import { SectionCard } from "@/components/ui/SectionCard";
 import { PortfolioTable } from "./quant/PortfolioTable";
 import { ReturnDistribution } from "./quant/ReturnDistribution";
 import { PortfolioBacktest } from "./quant/PortfolioBacktest";
+import { AlphaSearch } from "./quant/AlphaSearch";
 
 type Status = "idle" | "running" | "done" | "error";
 
@@ -90,7 +91,9 @@ export function QuantView() {
       .finally(() => setBackendsLoaded(true));
   }, []);
   useEffect(() => {
-    api.quantAlpha({ jurisdiction, top: 12, label: horizon }).then(setAlpha).catch(() => setAlpha(null));
+    // Pull a deep slice of the cross-section so the forecast-search panel has room to
+    // filter/sort; the optimizer header only reads `alpha.model` off the same response.
+    api.quantAlpha({ jurisdiction, top: 200, label: horizon }).then(setAlpha).catch(() => setAlpha(null));
   }, [jurisdiction, horizon]);
 
   // Prefer the fetched alpha's model meta (reflects the selected horizon); fall back to /backends.
@@ -358,32 +361,9 @@ export function QuantView() {
         )}
       </SectionCard>
 
-      {/* ---------------------------------------------- alpha table */}
-      <SectionCard eyebrow="Return prediction" title="Top expected returns (alpha model)">
-        {alpha?.available ? (
-          <div className="overflow-x-auto">
-            <table className="w-full max-w-xl text-[12px]">
-              <thead>
-                <tr className="border-b border-border text-left text-muted">
-                  <th className="py-1.5 pr-3">Ticker</th>
-                  <th className="py-1.5 pr-3 text-right">{horizonShort(horizon)} return</th>
-                  <th className="py-1.5 text-right">Annualized</th>
-                </tr>
-              </thead>
-              <tbody>
-                {alpha.rows.map((r) => (
-                  <tr key={r.ticker} className="border-b border-border/60">
-                    <td className="py-1.5 pr-3 font-medium text-navy">{r.ticker}</td>
-                    <td className="py-1.5 pr-3 text-right tabular-nums">{pctFmt(r.expected_return_monthly, 2)}</td>
-                    <td className="py-1.5 text-right tabular-nums">{pctFmt(r.expected_return_annual, 1)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="text-[12px] text-muted">{alpha?.note || "No trained alpha model for this market yet."}</div>
-        )}
+      {/* ---------------------------------------------- alpha forecast search */}
+      <SectionCard eyebrow="Return prediction · search" title="Alpha forecasts — screen by return, size &amp; confidence">
+        <AlphaSearch alpha={alpha} jurisdiction={jurisdiction} horizon={horizon} />
       </SectionCard>
     </div>
   );

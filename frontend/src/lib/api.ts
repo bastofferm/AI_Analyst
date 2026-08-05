@@ -830,6 +830,8 @@ export type QuantAlphaRow = {
 };
 export type QuantAlphaResponse = {
   available: boolean; model: QuantAlphaModelMeta | null; rows: QuantAlphaRow[]; note?: string;
+  /** Number of names the model actually scored this month (the full cross-section). */
+  n_covered?: number;
 };
 export type QuantRiskRow = {
   ticker: string; forward_vol_annual: number; factor_exposures: Record<string, number>;

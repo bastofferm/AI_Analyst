@@ -93,13 +93,15 @@ def _run_alpha(req: AlphaRequest) -> dict[str, Any]:
             {"ticker": t, "expected_return_monthly": v, "expected_return_annual": _ann(v)}
             for t, v in er.items()
         ]
+        n_covered = sum(1 for v in er.values() if v is not None)
     else:
         cross = alpha_signal.latest_cross_section(req.jurisdiction, label=req.label)
+        n_covered = int(cross.shape[0])          # names the model actually scored this month
         rows = [
             {"ticker": t, "expected_return_monthly": float(v), "expected_return_annual": _ann(v)}
             for t, v in cross.head(req.top).items()
         ]
-    return {"available": True, "model": meta, "rows": rows}
+    return {"available": True, "model": meta, "rows": rows, "n_covered": n_covered}
 
 
 # --------------------------------------------------------------------------- #
