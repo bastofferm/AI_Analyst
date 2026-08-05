@@ -859,6 +859,20 @@ export type QuantDistribution = {
   curve?: { x: number; y: number }[];
   weight_covered?: number; names_used?: number; history_from?: string | null; history_to?: string | null;
 };
+// Fixed-weight portfolio backtest of the optimized book on past returns (backend
+// qlib_backtest.weighted_portfolio_backtest): equity vs FF market, performance, a
+// full-period FF regression, and rolling factor exposures over time.
+export type QuantExposurePoint = { date: string; betas: Record<string, number> };
+export type QuantPortfolioBacktest = {
+  available: boolean; reason?: string; benchmarked?: boolean;
+  n_months?: number; history_from?: string; history_to?: string; roll_window?: number;
+  performance?: QuantPerformance;
+  factor_regression?: QuantFactorRegression;
+  benchmark?: { available: boolean; label: string };
+  curve?: QuantBacktestPoint[];
+  exposures?: QuantExposurePoint[];
+  weight_covered?: number;
+};
 export type QuantOptimizeResponse = {
   backend: string; weights: PortfolioWeight[];
   expected_return_annual: number; vol_annual: number; sharpe: number | null;
@@ -867,6 +881,12 @@ export type QuantOptimizeResponse = {
   horizon_months?: number;
   per_name?: QuantPerName[];
   distribution?: QuantDistribution;
+  portfolio_backtest?: QuantPortfolioBacktest;
+};
+export type QuantRetrainResponse = {
+  ok: boolean; jurisdiction: string; label: string;
+  rank_ic?: number | null; coverage?: number | null; error?: string | null;
+  model?: QuantAlphaModelMeta | null;
 };
 export type QuantPerformance = {
   annualized_return: number; annualized_vol: number; sharpe: number | null;
@@ -1020,6 +1040,12 @@ export const api = {
 
   quantBacktest: (body: QuantBacktestRequest) =>
     fetchJSON<QuantBacktestResponse>(`/api/quant/backtest`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    }),
+
+  // Slow (~1–3 min): trains + persists the (jurisdiction, horizon) alpha model server-side.
+  quantRetrain: (body: { jurisdiction?: Jurisdiction; label?: string }) =>
+    fetchJSON<QuantRetrainResponse>(`/api/quant/retrain`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     }),
 };

@@ -89,7 +89,7 @@ export function PortfolioTable({
                   {/* 2y sparkline */}
                   <td className="px-2 py-2.5">
                     <div className="flex justify-center">
-                      {series && series.length > 1 ? <Sparkline points={series} width={72} height={24} /> : <span className="text-muted">—</span>}
+                      {series && series.length > 1 ? <Sparkline points={series} width={72} height={24} smooth /> : <span className="text-muted">—</span>}
                     </div>
                   </td>
                   {/* valuation + growth */}

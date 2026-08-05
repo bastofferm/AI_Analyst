@@ -47,3 +47,31 @@ export function fmtShort(v: number): string {
 export function isNum(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
+
+/**
+ * Smooth SVG path through `pts` via a Catmull-Rom → cubic-Bézier conversion, so
+ * line charts read as continuous curves instead of jagged polylines. `tension`
+ * ~1 is the classic Catmull-Rom; lower tightens the curve toward straight
+ * segments. Falls back to straight moves for 0–2 points.
+ */
+export function smoothPath(pts: [number, number][], tension = 0.9): string {
+  const n = pts.length;
+  if (n === 0) return "";
+  const f = (x: number) => x.toFixed(2);
+  if (n === 1) return `M${f(pts[0][0])},${f(pts[0][1])}`;
+  if (n === 2) return `M${f(pts[0][0])},${f(pts[0][1])} L${f(pts[1][0])},${f(pts[1][1])}`;
+  const k = tension / 6;
+  let d = `M${f(pts[0][0])},${f(pts[0][1])}`;
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = pts[i === 0 ? 0 : i - 1];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2 < n ? i + 2 : n - 1];
+    const c1x = p1[0] + (p2[0] - p0[0]) * k;
+    const c1y = p1[1] + (p2[1] - p0[1]) * k;
+    const c2x = p2[0] - (p3[0] - p1[0]) * k;
+    const c2y = p2[1] - (p3[1] - p1[1]) * k;
+    d += ` C${f(c1x)},${f(c1y)} ${f(c2x)},${f(c2y)} ${f(p2[0])},${f(p2[1])}`;
+  }
+  return d;
+}

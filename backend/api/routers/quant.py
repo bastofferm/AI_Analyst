@@ -198,38 +198,49 @@ def _apply_weight_cap(w: np.ndarray, cap: float, iters: int = 200) -> np.ndarray
     return w
 
 
-def _horizon_distribution(
+def _book_analytics(
     tickers: list[str], weights: np.ndarray, jurisdiction: str, horizon_months: int,
-    *, history_years: float = 7.0,
-) -> dict[str, Any]:
-    """Historical-simulation distribution of the book's horizon return.
+    *, history_years: float = 7.0, roll_window: int = 24,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return-distribution *and* fixed-weight portfolio backtest for the optimized book.
 
-    Loads a long common daily history for ``tickers``, aligns ``weights`` by ticker
-    (renormalizing over the names that actually have history), and hands off to
-    :func:`api.quant.simulate.portfolio_return_distribution`. Advisory — any failure
-    degrades to ``available=False`` rather than sinking the optimize response.
+    Loads a long common daily history for ``tickers`` **once**, aligns ``weights`` by ticker
+    (renormalizing over the names that actually have history), then hands the same panel to
+    the historical-simulation distribution (:func:`api.quant.simulate`) and the fixed-weight
+    portfolio backtest (:func:`api.quant.qlib_backtest.weighted_portfolio_backtest`). Advisory
+    — any failure degrades both to ``available=False`` rather than sinking the optimize.
     """
+    def _fail(reason: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        return {"available": False, "reason": reason}, {"available": False, "reason": reason}
+
     try:
         w_by_ticker = {t: float(w) for t, w in zip(tickers, weights)}
         start = date.today() - timedelta(days=int(365.25 * history_years))
         present, R, dates = qlib_risk.load_price_returns(list(tickers), jurisdiction, start, date.today())
         if len(present) < 1 or R.shape[0] < 3:
-            return {"available": False, "reason": "insufficient price history for a return distribution"}
+            return _fail("insufficient price history for this book")
         w = np.array([w_by_ticker.get(t, 0.0) for t in present], dtype=float)
         covered = float(w.sum())
         if covered <= 1e-9:
-            return {"available": False, "reason": "no weighted names have price history"}
+            return _fail("no weighted names have price history")
         w = w / covered  # renormalize over the names that have history
+
         dist = simulate.portfolio_return_distribution(R, w, horizon_months)
         if dist.get("available"):
             dist["weight_covered"] = covered
             dist["names_used"] = len(present)
             dist["history_from"] = str(dates[0])[:10] if dates else None
             dist["history_to"] = str(dates[-1])[:10] if dates else None
-        return dist
+
+        bt = qlib_backtest.weighted_portfolio_backtest(
+            present, R, dates, w, jurisdiction, roll_window=roll_window)
+        if bt.get("available"):
+            bt["weight_covered"] = covered
+
+        return dist, bt
     except Exception as exc:  # noqa: BLE001 - advisory; never sink the optimize
-        logger.warning("return distribution failed", exc_info=True)
-        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+        logger.warning("book analytics failed", exc_info=True)
+        return _fail(f"{type(exc).__name__}: {exc}")
 
 
 def _run_optimize(req: OptimizeRequest) -> dict[str, Any]:
@@ -305,9 +316,10 @@ def _run_optimize(req: OptimizeRequest) -> dict[str, Any]:
         for i, t in enumerate(present)
     ]
 
-    # Historical-simulation distribution of the *book's* horizon return (see
-    # api.quant.simulate). Uses the fixed optimizer weights over a long common history.
-    distribution = _horizon_distribution(present, w_final, req.jurisdiction, h)
+    # Historical-simulation distribution + fixed-weight portfolio backtest of the book (see
+    # api.quant.simulate / qlib_backtest). Both use the optimizer weights over a long common
+    # history, loaded once.
+    distribution, portfolio_backtest = _book_analytics(present, w_final, req.jurisdiction, h)
 
     out = sol.to_dict()
     out.update({
@@ -320,6 +332,7 @@ def _run_optimize(req: OptimizeRequest) -> dict[str, Any]:
         "horizon_months": h,
         "per_name": per_name,
         "distribution": distribution,
+        "portfolio_backtest": portfolio_backtest,
     })
     if alpha_note:
         out.setdefault("warnings", []).append(alpha_note)
@@ -347,3 +360,45 @@ async def backtest(req: BacktestRequest) -> dict[str, Any]:
         qlib_backtest.backtest_alpha, art,
         start=req.start, end=req.end, topk=req.topk, long_short=req.long_short,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Retrain (extend alpha coverage to names the model doesn't yet forecast)
+# --------------------------------------------------------------------------- #
+class RetrainRequest(BaseModel):
+    jurisdiction: str = "US"
+    label: str = "forward_1m"          # horizon model to (re)train: forward_1m|3m|6m|12m
+
+
+@router.post("/retrain")
+async def retrain(req: RetrainRequest) -> dict[str, Any]:
+    """(Re)train + persist the (jurisdiction, horizon) alpha model, refresh the coverage
+    ledger, and drop the cached cross-section. Synchronous and slow (a full panel build +
+    LightGBM fit, ~1–3 min) — the UI runs it behind a spinner."""
+    if req.label not in qlib_data.LABEL_HORIZONS:
+        raise HTTPException(422, f"unknown horizon {req.label!r}; choose one of {list(qlib_data.LABEL_HORIZONS)}")
+    if req.jurisdiction.upper() not in ("US", "JP"):
+        raise HTTPException(422, "retrain is available for the US and JP models")
+    return await _in_thread(_run_retrain, req)
+
+
+def _run_retrain(req: RetrainRequest) -> dict[str, Any]:
+    import os
+
+    from ..quant import qlib_train_all
+
+    start = (date.today() - timedelta(days=365 * 8)).isoformat()
+    threads = max(1, (os.cpu_count() or 4) // 2)
+    rec = qlib_train_all._train_one(req.jurisdiction.upper(), req.label, start, threads)
+    # A freshly-saved artifact hot-reloads by mtime, but the latest-cross-section cache is
+    # TTL'd — drop it so the next optimize re-scores against the new model.
+    alpha_signal.clear_cache()
+    return {
+        "ok": bool(rec.get("ok")),
+        "jurisdiction": req.jurisdiction.upper(),
+        "label": req.label,
+        "rank_ic": rec.get("rank_ic"),
+        "coverage": rec.get("coverage"),
+        "error": rec.get("error"),
+        "model": alpha_signal.model_meta(req.jurisdiction, req.label),
+    }

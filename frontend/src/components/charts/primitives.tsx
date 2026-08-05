@@ -17,6 +17,7 @@ import {
   UI_GREEN,
   UI_RED,
   isNum,
+  smoothPath,
 } from "./theme";
 
 // ---------------------------------------------------------------- Sparkline
@@ -27,12 +28,14 @@ export function Sparkline({
   height = 22,
   color,
   strokeWidth = 1.5,
+  smooth = false,
 }: {
   points: (number | null | undefined)[];
   width?: number;
   height?: number;
   color?: string;
   strokeWidth?: number;
+  smooth?: boolean;
 }) {
   const vals = (points || []).filter(isNum);
   if (vals.length < 2) return null;
@@ -41,18 +44,16 @@ export function Sparkline({
   const rng = hi - lo || 1;
   const pad = 2;
   const n = vals.length;
-  const pts = vals
-    .map((v, i) => {
-      const x = pad + (i / (n - 1)) * (width - pad * 2);
-      const y = pad + (1 - (v - lo) / rng) * (height - pad * 2);
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
+  const xy = vals.map((v, i): [number, number] => [
+    pad + (i / (n - 1)) * (width - pad * 2),
+    pad + (1 - (v - lo) / rng) * (height - pad * 2),
+  ]);
+  const d = smooth ? smoothPath(xy) : "M" + xy.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" L");
   const trendColor = color || (vals[n - 1] >= vals[0] ? CHART_GREEN : CHART_RED);
   return (
     <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} aria-hidden="true">
-      <polyline
-        points={pts}
+      <path
+        d={d}
         pathLength={1}
         className="spark-draw"
         fill="none"

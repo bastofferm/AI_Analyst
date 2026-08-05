@@ -149,6 +149,32 @@ def test_backtest_pnl_uses_one_month_return_not_horizon_label():
     assert monthly_mag < 0.10  # realistic monthly P&L, not a 6-month compounded figure
 
 
+def test_rolling_exposures_recovers_known_betas():
+    """The rolling FF-exposure regression should recover the true betas of a
+    synthetically factor-driven return series in its trailing windows."""
+    import pandas as pd
+
+    from api.quant import qlib_backtest
+
+    n = 60
+    dates = pd.period_range("2020-01", periods=n, freq="M").to_timestamp("M")
+    rng = np.random.default_rng(7)
+    X = pd.DataFrame(
+        {"mkt_rf": rng.standard_normal(n) * 0.04, "smb": rng.standard_normal(n) * 0.02},
+        index=dates,
+    )
+    y = pd.Series(0.001 + 1.1 * X["mkt_rf"] - 0.3 * X["smb"] + rng.standard_normal(n) * 0.0008, index=dates)
+
+    exp = qlib_backtest._rolling_exposures(y, X, window=24)
+    assert len(exp) == n - 24 + 1
+    assert exp[0]["date"] < exp[-1]["date"]           # ascending month-ends
+    last = exp[-1]["betas"]
+    assert last["mkt_rf"] == pytest.approx(1.1, abs=0.06)
+    assert last["smb"] == pytest.approx(-0.3, abs=0.06)
+    # Degenerate guard: a window too short for the factor count returns nothing.
+    assert qlib_backtest._rolling_exposures(y, X, window=3) == []
+
+
 # --------------------------------------------------------------------------- #
 # Scoring: exact legacy fallback + alpha blend + IC re-split (no DB)
 # --------------------------------------------------------------------------- #

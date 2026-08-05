@@ -202,6 +202,107 @@ def backtest_alpha(
     return result
 
 
+def weighted_portfolio_backtest(
+    tickers: list[str],
+    R: np.ndarray,
+    dates: list,
+    weights: np.ndarray,
+    jurisdiction: str,
+    *,
+    roll_window: int = 24,
+) -> dict[str, Any]:
+    """Backtest a **fixed-weight** book on past returns — the current optimizer weights
+    held constant over history.
+
+    This is what "run the backtest on past return data with the current optimal weights"
+    means: form the portfolio the optimizer just produced and roll it backwards over the
+    available daily history. It is *in-sample by construction* (the weights were fit using
+    data through today), so it answers "what would this exact book have done", not "is the
+    signal out-of-sample". Returns a monthly equity curve vs the Fama-French market, the
+    usual performance/risk stats, a full-period FF 5-factor + momentum regression, and the
+    book's **rolling factor exposures over time**.
+    """
+    w = np.asarray(weights, dtype=float).reshape(-1)
+    R = np.asarray(R, dtype=float)
+    if R.ndim != 2 or R.shape[1] != w.shape[0] or R.shape[0] < 60:
+        return {"available": False, "reason": "insufficient overlapping history for a portfolio backtest"}
+
+    # Daily book return -> monthly (compounded within each calendar month).
+    idx = pd.to_datetime(pd.Index(dates))
+    rp = pd.Series(R @ w, index=idx).sort_index()
+    s = (1.0 + rp).groupby(rp.index.to_period("M").to_timestamp("M")).prod() - 1.0
+    s = s.dropna().sort_index()
+    if len(s) < roll_window + 3:
+        return {"available": False, "reason": "need more monthly history for a portfolio backtest"}
+
+    ff = _ff_monthly(jurisdiction, s.index)
+    juris = (jurisdiction or "US").upper()
+    bench_label = ("Japan" if juris == "JP" else "US") + " Fama-French market (Mkt-RF + RF)"
+    if ff is None or ff.empty:
+        eq = (1.0 + s).cumprod()
+        curve = [{"date": str(pd.Timestamp(d).date()), "ret": float(s.loc[d]), "equity": float(eq.loc[d])}
+                 for d in s.index]
+        return {"available": True, "benchmarked": False, "n_months": int(len(s)),
+                "history_from": str(s.index[0].date()), "history_to": str(s.index[-1].date()),
+                "roll_window": roll_window, "curve": curve, "exposures": [],
+                "performance": {}, "factor_regression": {"available": False},
+                "benchmark": {"available": False, "label": bench_label}}
+
+    common = s.index.intersection(ff.index)
+    s = s.reindex(common).dropna()
+    F = ff.reindex(s.index)
+    rf = F["rf"]
+    mkt = F["mkt_rf"] + rf
+
+    performance = _performance(s, mkt, rf)
+    factor_reg = _factor_regression(s - rf, F[_FACTOR_KEYS])
+    strat_eq = (1.0 + s).cumprod()
+    bench_eq = (1.0 + mkt).cumprod()
+    curve = [
+        {"date": str(pd.Timestamp(d).date()), "ret": float(s.loc[d]),
+         "equity": float(strat_eq.loc[d]), "bench_equity": float(bench_eq.loc[d])}
+        for d in s.index
+    ]
+    exposures = _rolling_exposures(s - rf, F[_FACTOR_KEYS], roll_window)
+
+    return {
+        "available": True,
+        "benchmarked": True,
+        "n_months": int(len(s)),
+        "history_from": str(s.index[0].date()),
+        "history_to": str(s.index[-1].date()),
+        "roll_window": roll_window,
+        "performance": performance,
+        "factor_regression": factor_reg,
+        "benchmark": {"available": True, "label": bench_label},
+        "curve": curve,
+        "exposures": exposures,
+    }
+
+
+def _rolling_exposures(y: pd.Series, X: pd.DataFrame, window: int) -> list[dict[str, Any]]:
+    """Trailing ``window``-month OLS betas of ``y`` on the FF factors ``X``, one point per
+    month-end from the first full window onward — the book's factor exposure *over time*."""
+    yv = y.values.astype(float)
+    Xv = X.values.astype(float)
+    n, k = Xv.shape
+    names = list(X.columns)
+    dates = y.index
+    out: list[dict[str, Any]] = []
+    if n < window or window < k + 2:
+        return out
+    for i in range(window, n + 1):
+        yw = yv[i - window:i]
+        Xw = Xv[i - window:i]
+        A = np.column_stack([np.ones(window), Xw])
+        coef, *_ = np.linalg.lstsq(A, yw, rcond=None)
+        out.append({
+            "date": str(pd.Timestamp(dates[i - 1]).date()),
+            "betas": {name: float(coef[1 + j]) for j, name in enumerate(names)},
+        })
+    return out
+
+
 def prewarm(jurisdiction: str = "US") -> None:
     """Warm the default backtest (call from a startup thread; the walk-forward is slow)."""
     art = qlib_alpha.get_model(jurisdiction)

@@ -171,7 +171,7 @@ export function CompanyDataSection({
   );
 }
 
-function CompanyDataBody({ data }: { data: CompanyDataResponse }) {
+export function CompanyDataBody({ data, compact = false }: { data: CompanyDataResponse; compact?: boolean }) {
   const d = data;
   const cv = useMoney();
   const chips = useMemo(() => highlights(d, cv), [d, cv]);
@@ -184,7 +184,7 @@ function CompanyDataBody({ data }: { data: CompanyDataResponse }) {
   ].filter(Boolean) as string[];
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className={`flex flex-col ${compact ? "gap-3" : "gap-5"}`}>
       {/* Profile line + market cap */}
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
         <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-navy">
@@ -206,20 +206,20 @@ function CompanyDataBody({ data }: { data: CompanyDataResponse }) {
         ) : null}
       </div>
 
-      {/* Highlights */}
+      {/* Highlights — compact chips are smaller and un-animated (drawer context). */}
       {chips.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
+        <div className={`flex flex-wrap ${compact ? "gap-1" : "gap-1.5"}`}>
           {chips.map((c, i) => (
             <span
               key={c.text}
-              className={`rise-in hover-lift rounded-full border px-2.5 py-1 text-[11px] font-medium ${
+              className={`${compact ? "rounded-full px-1.5 py-0.5 text-[9.5px]" : "rise-in hover-lift rounded-full px-2.5 py-1 text-[11px]"} border font-medium ${
                 c.tone === "pos"
                   ? "border-green/30 bg-green/5 text-green"
                   : c.tone === "neg"
                     ? "border-red/30 bg-red/5 text-red"
                     : "border-border bg-white text-navy"
               }`}
-              style={{ animationDelay: `${i * 80}ms` }}
+              style={compact ? undefined : { animationDelay: `${i * 80}ms` }}
             >
               {c.text}
             </span>

@@ -2,9 +2,9 @@
 
 // Quant — the qlib-powered desk: cross-sectional alpha (expected returns), a
 // factor-structured risk model, portfolio optimization with a runtime-selectable
-// optimizer backend (native SLSQP/MIP OR any qlib method), and a walk-forward
-// out-of-sample backtest benchmarked against the Fama-French market + factor model.
-// Talks to /api/quant/* (see backend/api/routers/quant.py).
+// optimizer backend (native SLSQP/MIP OR any qlib method), a historical-simulation
+// return distribution, and a fixed-weight portfolio backtest of the optimized book
+// (equity vs Fama-French + rolling factor exposures). Talks to /api/quant/*.
 
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -12,8 +12,6 @@ import {
   type Jurisdiction,
   type QuantAlphaResponse,
   type QuantBackends,
-  type QuantBacktestPoint,
-  type QuantBacktestResponse,
   type QuantOptimizeResponse,
   type QuantPerName,
   type ScreenerRow,
@@ -21,6 +19,7 @@ import {
 import { SectionCard } from "@/components/ui/SectionCard";
 import { PortfolioTable } from "./quant/PortfolioTable";
 import { ReturnDistribution } from "./quant/ReturnDistribution";
+import { PortfolioBacktest } from "./quant/PortfolioBacktest";
 
 type Status = "idle" | "running" | "done" | "error";
 
@@ -43,9 +42,6 @@ const RISK_LABELS: Record<string, string> = {
   qlib_structured: "qlib factor-structured",
   ledoit_wolf: "Ledoit-Wolf shrinkage",
   sample: "Sample covariance",
-};
-const BETA_LABELS: Record<string, string> = {
-  mkt_rf: "Mkt", smb: "SMB", hml: "HML", rmw: "RMW", cma: "CMA", mom: "Mom",
 };
 // Forward-return horizons the alpha model is trained on. The value is the backend `label`.
 const HORIZON_LABELS: Record<string, string> = {
@@ -78,11 +74,9 @@ export function QuantView() {
 
   const [alpha, setAlpha] = useState<QuantAlphaResponse | null>(null);
 
-  const [bt, setBt] = useState<QuantBacktestResponse | null>(null);
-  const [btStatus, setBtStatus] = useState<Status>("idle");
-  const [btErr, setBtErr] = useState("");
-  const [topk, setTopk] = useState(30);
-  const [longShort, setLongShort] = useState(false);
+  // Retrain: (re)train the alpha model server-side to cover names it doesn't forecast yet.
+  const [retrainStatus, setRetrainStatus] = useState<Status>("idle");
+  const [retrainMsg, setRetrainMsg] = useState("");
 
   const tickers = useMemo(
     () => universe.split(/[,\s]+/).map((t) => t.trim().toUpperCase()).filter(Boolean),
@@ -108,8 +102,8 @@ export function QuantView() {
     setOpt(null);
     setMeta(new Map());
     setPriceSeries(new Map());
-    setBt(null);
-    setBtStatus("idle");
+    setRetrainMsg("");
+    setRetrainStatus("idle");
   }
 
   async function runOptimize() {
@@ -169,20 +163,33 @@ export function QuantView() {
     ).then((pairs) => setPriceSeries(new Map(pairs)));
   }
 
-  async function runBacktest() {
-    setBtStatus("running");
-    setBtErr("");
+  // Retrain the (jurisdiction, horizon) alpha model, then re-run the optimize so newly
+  // covered names pick up a model forecast. Slow (~1–3 min) — the button shows progress.
+  async function runRetrain() {
+    setRetrainStatus("running");
+    setRetrainMsg("Retraining the alpha model on the full panel — this takes 1–3 minutes…");
     try {
-      const res = await api.quantBacktest({ jurisdiction, topk, long_short: longShort, label: horizon });
-      setBt(res);
-      setBtStatus(res.available ? "done" : "error");
-      if (!res.available) setBtErr(res.reason || "backtest unavailable");
+      const res = await api.quantRetrain({ jurisdiction, label: horizon });
+      if (res.ok) {
+        setRetrainStatus("done");
+        setRetrainMsg(
+          `Retrained ${res.jurisdiction} ${horizonShort(horizon)} model` +
+          (res.rank_ic != null ? ` · rank-IC ${numFmt(res.rank_ic, 3)}` : "") +
+          (res.coverage != null ? ` · now covers ${res.coverage} names` : "") +
+          ". Re-optimizing…"
+        );
+        await runOptimize();
+        api.quantAlpha({ jurisdiction, top: 12, label: horizon }).then(setAlpha).catch(() => {});
+      } else {
+        setRetrainStatus("error");
+        setRetrainMsg(res.error || "Retraining failed.");
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setBtErr(/network|fetch|timeout|failed to fetch/i.test(msg)
-        ? "Could not reach the backtest — the first run trains a walk-forward model (~90s) and is cached after. Try again."
+      setRetrainStatus("error");
+      setRetrainMsg(/network|fetch|timeout|failed to fetch/i.test(msg)
+        ? "Lost the connection while retraining — it may still be running on the server. Try optimizing again in a minute."
         : msg);
-      setBtStatus("error");
     }
   }
 
@@ -201,8 +208,12 @@ export function QuantView() {
       forward_vol_annual: NaN, forward_vol_horizon: NaN, alpha_source: "model" as const,
     }));
   }, [opt]);
-  const perf = bt?.performance;
-  const reg = bt?.factor_regression;
+  // Any universe name the model doesn't forecast (fell back to a historical mean) → offer
+  // retrain. per_name covers every present name (incl. 0-weight ones the warning counts).
+  const hasUncovered = useMemo(
+    () => !!opt?.per_name?.some((p) => p.alpha_source === "historical"),
+    [opt]
+  );
 
   return (
     <div className="space-y-5">
@@ -285,7 +296,24 @@ export function QuantView() {
               <Stat label="Sharpe" value={numFmt(opt.sharpe)} />
               <Stat label="Positions" value={String(sortedWeights.filter((w) => w.weight > 1e-4).length)} />
             </div>
-            {opt.warnings?.length ? <div className="text-[11px] text-amber-600">{opt.warnings.join(" · ")}</div> : null}
+            {opt.warnings?.length || hasUncovered ? (
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                {opt.warnings?.length ? <span className="text-[11px] text-amber-600">{opt.warnings.join(" · ")}</span> : null}
+                {hasUncovered ? (
+                  <button
+                    onClick={runRetrain}
+                    disabled={retrainStatus === "running"}
+                    className="rounded border border-amber-500/70 px-2 py-0.5 text-[11px] font-semibold text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+                    title="Train the alpha model so these names get a model forecast instead of a historical mean"
+                  >
+                    {retrainStatus === "running" ? "Retraining…" : "Retrain model"}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {retrainMsg ? (
+              <div className={`text-[11px] ${retrainStatus === "error" ? "text-red-700" : "text-muted"}`}>{retrainMsg}</div>
+            ) : null}
 
             <PortfolioTable
               perName={holdings}
@@ -310,88 +338,22 @@ export function QuantView() {
         ) : null}
       </SectionCard>
 
-      {/* ---------------------------------------------- backtest + FF benchmark */}
+      {/* ---------------------------------------------- portfolio backtest (current weights on past data) */}
       <SectionCard
-        eyebrow="Signal quality · out-of-sample"
-        title="Walk-forward backtest vs Fama-French"
+        eyebrow="Backtest · current book on past data"
+        title="Portfolio backtest"
         actions={
-          <div className="flex items-center gap-3 text-[12px]">
-            <label className="flex items-center gap-1.5">
-              <span className="text-muted">Top-k</span>
-              <input type="number" min={5} max={200} value={topk}
-                onChange={(e) => setTopk(Math.max(5, Math.min(200, Number(e.target.value) || 30)))}
-                className="w-16 rounded-md border border-border bg-panel px-2 py-1 text-[12px]" />
-            </label>
-            <label className="flex items-center gap-1.5">
-              <input type="checkbox" checked={longShort} onChange={(e) => setLongShort(e.target.checked)} />
-              <span className="text-muted">long/short</span>
-            </label>
-            <button
-              onClick={runBacktest}
-              disabled={btStatus === "running"}
-              className="rounded-md bg-navy px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-navy/90 disabled:opacity-50"
-            >
-              {btStatus === "running" ? "Running…" : "Run backtest"}
-            </button>
-          </div>
+          opt?.portfolio_backtest?.available ? (
+            <span className="text-[11px] text-muted">fixed weights · {opt.portfolio_backtest.n_months} months</span>
+          ) : null
         }
       >
-        {btStatus === "running" ? (
-          <div className="text-[12px] text-muted">
-            Training a walk-forward, out-of-sample model month by month… the first run takes ~90s (cached after).
-          </div>
-        ) : bt?.available && perf ? (
-          <div className="space-y-4">
-            <EquityChart curve={bt.curve || []} benchLabel={bt.benchmark?.label} />
-
-            <div>
-              <div className="label mb-1.5">Performance &amp; risk</div>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4 lg:grid-cols-6">
-                <Stat label="Ann. return" value={pctFmt(perf.annualized_return)} />
-                <Stat label="Volatility" value={pctFmt(perf.annualized_vol)} />
-                <Stat label="Sharpe" value={numFmt(perf.sharpe)} />
-                <Stat label="Sortino" value={numFmt(perf.sortino)} />
-                <Stat label="Max drawdown" value={pctFmt(perf.max_drawdown)} />
-                <Stat label="Hit rate" value={pctFmt(perf.hit_rate, 0)} />
-              </div>
-            </div>
-
-            <div>
-              <div className="label mb-1.5">Benchmark ({bt.benchmark?.label})</div>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4 lg:grid-cols-6">
-                <Stat label="Benchmark ann." value={pctFmt(perf.benchmark_annualized_return)} />
-                <Stat label="Excess (ann.)" value={pctFmt(perf.excess_annualized_return)} tone={perf.excess_annualized_return} />
-                <Stat label="Info ratio" value={numFmt(perf.information_ratio)} tone={perf.information_ratio} />
-                <Stat label="Tracking err." value={pctFmt(perf.tracking_error)} />
-                <Stat label="Market beta" value={numFmt(perf.beta_vs_market)} />
-                <Stat label="OOS rank-IC" value={numFmt(bt.ic?.rank_ic_mean, 3)} tone={bt.ic?.rank_ic_mean} />
-              </div>
-            </div>
-
-            {reg?.available ? (
-              <div>
-                <div className="label mb-1.5">Fama-French 5-factor + momentum regression</div>
-                <div className="flex flex-wrap items-start gap-6">
-                  <div className="flex gap-6">
-                    <Stat label="Alpha (ann.)" value={pctFmt(reg.alpha_annualized)} tone={reg.alpha_annualized} />
-                    <Stat label="Alpha t-stat" value={numFmt(reg.alpha_tstat)}
-                      sub={reg.alpha_tstat != null && Math.abs(reg.alpha_tstat) >= 2 ? "significant" : "not sig."} />
-                    <Stat label="R²" value={numFmt(reg.r2)} />
-                  </div>
-                  <BetaBars betas={reg.betas || {}} />
-                </div>
-              </div>
-            ) : null}
-
-            <div className="text-[10.5px] text-muted">
-              Out-of-sample walk-forward · ranked on the {bt.horizon_months ?? horizonShort(horizon)}-month alpha,
-              {" "}rebalanced monthly · investable universe (≥ $2B) · equal-weight top-{bt.topk}
-              {bt.long_short ? " long/short" : " long-only"} · gross of costs · {bt.n_periods} months.
-            </div>
-          </div>
+        {opt?.portfolio_backtest ? (
+          <PortfolioBacktest bt={opt.portfolio_backtest} />
         ) : (
           <div className="text-[12px] text-muted">
-            {btErr || "Run a genuine out-of-sample walk-forward: each month the model is retrained on prior data only, then benchmarked against the Fama-French market and decomposed into factor alpha/betas."}
+            Optimize a portfolio above — its exact weights are then held constant over past return data and
+            benchmarked against the Fama-French market, with the book’s factor exposures traced over time.
           </div>
         )}
       </SectionCard>
@@ -460,72 +422,3 @@ function Stat({ label, value, sub, tone }: { label: string; value: string; sub?:
   );
 }
 
-// Diverging horizontal bars for the FF factor betas.
-function BetaBars({ betas }: { betas: Record<string, number> }) {
-  const keys = ["mkt_rf", "smb", "hml", "rmw", "cma", "mom"].filter((k) => k in betas);
-  if (!keys.length) return null;
-  const max = Math.max(1e-6, ...keys.map((k) => Math.abs(betas[k])));
-  return (
-    <div className="min-w-[220px] flex-1">
-      <div className="space-y-1">
-        {keys.map((k) => {
-          const v = betas[k];
-          const w = (Math.abs(v) / max) * 50;
-          return (
-            <div key={k} className="flex items-center gap-2 text-[11px]">
-              <span className="w-8 shrink-0 text-muted">{BETA_LABELS[k] || k}</span>
-              <div className="relative h-3 flex-1">
-                <span className="absolute left-1/2 h-full w-px bg-border" />
-                <span className="absolute h-[7px] rounded-sm"
-                  style={{ width: `${w}%`, left: v >= 0 ? "50%" : `${50 - w}%`,
-                           background: v >= 0 ? "#2F4D73" : "#DC2626", opacity: 0.8, top: 2 }} />
-              </div>
-              <span className="w-10 shrink-0 text-right tabular-nums text-navy">{v.toFixed(2)}</span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// Strategy vs benchmark cumulative-equity line chart (self-contained SVG).
-function EquityChart({ curve, benchLabel }: { curve: QuantBacktestPoint[]; benchLabel?: string }) {
-  if (curve.length < 2) return null;
-  const W = 720, H = 240, pad = { l: 46, r: 14, t: 14, b: 26 };
-  const strat = curve.map((p) => p.equity);
-  const bench = curve.map((p) => p.bench_equity ?? null);
-  const vals = [...strat, ...(bench.filter((v) => v != null) as number[]), 1];
-  const ymin = Math.min(...vals), ymax = Math.max(...vals);
-  const n = curve.length;
-  const X = (i: number) => pad.l + (i / (n - 1)) * (W - pad.l - pad.r);
-  const Y = (v: number) => pad.t + (1 - (v - ymin) / (ymax - ymin || 1)) * (H - pad.t - pad.b);
-  const line = (series: (number | null)[]) =>
-    series.map((v, i) => (v == null ? null : `${i === 0 ? "M" : "L"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`))
-      .filter(Boolean).join(" ");
-  const ticks = [ymin, (ymin + ymax) / 2, ymax];
-  const firstDate = curve[0].date, lastDate = curve[n - 1].date;
-  return (
-    <div className="overflow-x-auto">
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxWidth: W }}>
-        {ticks.map((t, i) => (
-          <g key={i}>
-            <line x1={pad.l} x2={W - pad.r} y1={Y(t)} y2={Y(t)} stroke="#E3E6EA" strokeWidth={1} />
-            <text x={pad.l - 6} y={Y(t) + 3} textAnchor="end" fontSize={9} fill="#6F7890">{t.toFixed(2)}×</text>
-          </g>
-        ))}
-        <line x1={pad.l} x2={W - pad.r} y1={Y(1)} y2={Y(1)} stroke="#B9C0CA" strokeWidth={1} strokeDasharray="3 3" />
-        {bench.some((v) => v != null) ? (
-          <path d={line(bench)} fill="none" stroke="#94A3B8" strokeWidth={1.6} />
-        ) : null}
-        <path d={line(strat)} fill="none" stroke="#2F4D73" strokeWidth={2} />
-        <text x={pad.l} y={H - 8} fontSize={9} fill="#6F7890">{firstDate}</text>
-        <text x={W - pad.r} y={H - 8} textAnchor="end" fontSize={9} fill="#6F7890">{lastDate}</text>
-      </svg>
-      <div className="mt-1 flex gap-4 text-[11px] text-muted">
-        <span className="flex items-center gap-1.5"><span className="inline-block h-0.5 w-4" style={{ background: "#2F4D73" }} />Strategy</span>
-        <span className="flex items-center gap-1.5"><span className="inline-block h-0.5 w-4" style={{ background: "#94A3B8" }} />{benchLabel || "Benchmark"}</span>
-      </div>
-    </div>
-  );
-}
