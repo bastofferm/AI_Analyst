@@ -24,7 +24,7 @@ import numpy as np
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from ..quant import alpha_signal, qlib_alpha, qlib_backtest, qlib_optimize, qlib_risk
+from ..quant import alpha_signal, qlib_alpha, qlib_backtest, qlib_data, qlib_optimize, qlib_risk, simulate
 from ..quant import risk as risk_mod
 
 router = APIRouter()
@@ -83,18 +83,20 @@ def _run_alpha(req: AlphaRequest) -> dict[str, Any]:
     if meta is None:
         return {"available": False, "model": None, "rows": [],
                 "note": f"no trained {req.label} alpha model for {req.jurisdiction}"}
-    ann = meta["annualization"]
+    # The prediction is a compounded horizon return; annualize it geometrically
+    # (qlib_data.annualize_return), consistent with the optimizer mu and backtest.
+    h = int(meta["horizon_months"])
+    _ann = lambda v: (qlib_data.annualize_return(float(v), h) if v is not None else None)
     if req.tickers:
         er = alpha_signal.expected_returns(req.jurisdiction, req.tickers, label=req.label)
         rows = [
-            {"ticker": t, "expected_return_monthly": v,
-             "expected_return_annual": (v * ann) if v is not None else None}
+            {"ticker": t, "expected_return_monthly": v, "expected_return_annual": _ann(v)}
             for t, v in er.items()
         ]
     else:
         cross = alpha_signal.latest_cross_section(req.jurisdiction, label=req.label)
         rows = [
-            {"ticker": t, "expected_return_monthly": float(v), "expected_return_annual": float(v) * ann}
+            {"ticker": t, "expected_return_monthly": float(v), "expected_return_annual": _ann(v)}
             for t, v in cross.head(req.top).items()
         ]
     return {"available": True, "model": meta, "rows": rows}
@@ -196,6 +198,40 @@ def _apply_weight_cap(w: np.ndarray, cap: float, iters: int = 200) -> np.ndarray
     return w
 
 
+def _horizon_distribution(
+    tickers: list[str], weights: np.ndarray, jurisdiction: str, horizon_months: int,
+    *, history_years: float = 7.0,
+) -> dict[str, Any]:
+    """Historical-simulation distribution of the book's horizon return.
+
+    Loads a long common daily history for ``tickers``, aligns ``weights`` by ticker
+    (renormalizing over the names that actually have history), and hands off to
+    :func:`api.quant.simulate.portfolio_return_distribution`. Advisory — any failure
+    degrades to ``available=False`` rather than sinking the optimize response.
+    """
+    try:
+        w_by_ticker = {t: float(w) for t, w in zip(tickers, weights)}
+        start = date.today() - timedelta(days=int(365.25 * history_years))
+        present, R, dates = qlib_risk.load_price_returns(list(tickers), jurisdiction, start, date.today())
+        if len(present) < 1 or R.shape[0] < 3:
+            return {"available": False, "reason": "insufficient price history for a return distribution"}
+        w = np.array([w_by_ticker.get(t, 0.0) for t in present], dtype=float)
+        covered = float(w.sum())
+        if covered <= 1e-9:
+            return {"available": False, "reason": "no weighted names have price history"}
+        w = w / covered  # renormalize over the names that have history
+        dist = simulate.portfolio_return_distribution(R, w, horizon_months)
+        if dist.get("available"):
+            dist["weight_covered"] = covered
+            dist["names_used"] = len(present)
+            dist["history_from"] = str(dates[0])[:10] if dates else None
+            dist["history_to"] = str(dates[-1])[:10] if dates else None
+        return dist
+    except Exception as exc:  # noqa: BLE001 - advisory; never sink the optimize
+        logger.warning("return distribution failed", exc_info=True)
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+
 def _run_optimize(req: OptimizeRequest) -> dict[str, Any]:
     start = date.today() - timedelta(days=int(req.lookback_months * 30.5))
     present, R, _dates = qlib_risk.load_price_returns(req.tickers, req.jurisdiction, start, date.today())
@@ -250,6 +286,29 @@ def _run_optimize(req: OptimizeRequest) -> dict[str, Any]:
                 capped, mu, sigma, req.risk_free_annual)
             sol.warnings.append(f"Capped per-name weight at {cap:.0%} to prevent single-name concentration.")
 
+    # Per-name predicted return & risk over the forecast horizon (h months). mu / vol
+    # are annualized; de-annualize geometrically / by √time for the horizon figures.
+    h = qlib_data.HORIZON_MONTHS.get(req.label, 1)
+    hz = h / 12.0
+    w_final = np.asarray(sol.weights, dtype=float)
+    vol = sr.vol
+    per_name = [
+        {
+            "ticker": t,
+            "weight": float(w_final[i]),
+            "expected_return_annual": float(mu[i]),
+            "expected_return_horizon": float((1.0 + mu[i]) ** hz - 1.0) if mu[i] > -1.0 else -1.0,
+            "forward_vol_annual": float(vol[i]),
+            "forward_vol_horizon": float(vol[i] * np.sqrt(hz)),
+            "alpha_source": mu_sources[i],
+        }
+        for i, t in enumerate(present)
+    ]
+
+    # Historical-simulation distribution of the *book's* horizon return (see
+    # api.quant.simulate). Uses the fixed optimizer weights over a long common history.
+    distribution = _horizon_distribution(present, w_final, req.jurisdiction, h)
+
     out = sol.to_dict()
     out.update({
         "ok": True,
@@ -258,6 +317,9 @@ def _run_optimize(req: OptimizeRequest) -> dict[str, Any]:
         "alpha_sources": {t: s for t, s in zip(present, mu_sources)},
         "tickers_dropped": [t for t in req.tickers if t not in present],
         "n_obs": sr.n_obs,
+        "horizon_months": h,
+        "per_name": per_name,
+        "distribution": distribution,
     })
     if alpha_note:
         out.setdefault("warnings", []).append(alpha_note)

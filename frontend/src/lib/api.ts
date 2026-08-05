@@ -839,11 +839,34 @@ export type QuantRiskResponse = {
   tickers_dropped?: string[]; rows: QuantRiskRow[]; warnings?: string[]; note?: string;
 };
 export type PortfolioWeight = { ticker: string; weight: number };
+// Per-name predicted return & risk, both annualized and scaled to the forecast horizon.
+export type QuantPerName = {
+  ticker: string; weight: number;
+  expected_return_annual: number; expected_return_horizon: number;
+  forward_vol_annual: number; forward_vol_horizon: number;
+  alpha_source: "model" | "historical";
+};
+// Historical-simulation distribution of the book's horizon return (see backend simulate.py).
+export type QuantMoments = { mean: number; variance: number; std: number; skewness: number; kurtosis: number };
+export type QuantHistBin = { x0: number; x1: number; mid: number; density: number; count: number };
+export type QuantDistribution = {
+  available: boolean; reason?: string; method?: string;
+  horizon_months?: number; n_obs?: number; n_samples?: number; window_days?: number;
+  moments?: QuantMoments;
+  annualized?: { mean: number; vol: number };
+  percentiles?: Record<string, number>;
+  histogram?: QuantHistBin[];
+  curve?: { x: number; y: number }[];
+  weight_covered?: number; names_used?: number; history_from?: string | null; history_to?: string | null;
+};
 export type QuantOptimizeResponse = {
   backend: string; weights: PortfolioWeight[];
   expected_return_annual: number; vol_annual: number; sharpe: number | null;
   factor_exposures: Record<string, number>; warnings: string[]; diagnostics: Record<string, unknown>;
   risk_model: string; alpha_source: string; tickers_dropped: string[]; n_obs: number;
+  horizon_months?: number;
+  per_name?: QuantPerName[];
+  distribution?: QuantDistribution;
 };
 export type QuantPerformance = {
   annualized_return: number; annualized_vol: number; sharpe: number | null;
@@ -860,7 +883,8 @@ export type QuantFactorRegression = {
 export type QuantBacktestPoint = { date: string; ret: number; equity: number; bench_equity?: number };
 export type QuantBacktestResponse = {
   available: boolean; reason?: string; out_of_sample?: boolean;
-  jurisdiction?: string; label?: string; topk?: number; long_short?: boolean; n_periods?: number;
+  jurisdiction?: string; label?: string; horizon_months?: number; rebalance?: string;
+  topk?: number; long_short?: boolean; n_periods?: number;
   metrics?: Record<string, number>; ic?: Record<string, number | null>;
   performance?: QuantPerformance;
   factor_regression?: QuantFactorRegression;

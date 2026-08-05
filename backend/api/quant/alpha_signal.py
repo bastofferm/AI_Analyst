@@ -20,7 +20,7 @@ import threading
 
 import pandas as pd
 
-from . import qlib_alpha
+from . import qlib_alpha, qlib_data
 
 logger = logging.getLogger("mzqa.quant.alpha_signal")
 
@@ -144,13 +144,15 @@ def expected_returns_with_fallback(
     optimizer, the committee node, and the scanner.
     """
     er = expected_returns(jurisdiction, tickers, label=label)
-    ann = (model_meta(jurisdiction, label) or {}).get("annualization", 12.0)
+    horizon = (model_meta(jurisdiction, label) or {}).get("horizon_months", 1)
     mu: list[float] = []
     sources: list[str] = []
     for t in tickers:
         v = er.get(t)
         if v is not None:
-            mu.append(float(v) * ann)
+            # Geometric annualization of the compounded horizon forecast, consistent
+            # with the backtest's equity-curve annualization (see qlib_data.annualize_return).
+            mu.append(qlib_data.annualize_return(float(v), horizon))
             sources.append("model")
         else:
             mu.append(float(hist_annual.get(t, 0.0)))

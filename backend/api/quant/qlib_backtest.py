@@ -103,6 +103,13 @@ def _oos_predictions(
         parts.append(pd.DataFrame({"alpha": p, "ret": lab[te].values}, index=feat[te].index))
 
     out = pd.concat(parts) if parts else pd.DataFrame()
+    if not out.empty:
+        # Realized *one-month* forward return per name, joined on the same month-end.
+        # This is the backtest's P&L unit — decoupled from the (possibly multi-month)
+        # horizon the model ranks on — so a forward_6m signal is no longer counted as a
+        # month's return and compounded on overlapping windows (the ~170x-curve bug).
+        r1m = qlib_data.realized_forward_returns(artifact.jurisdiction, start=start, end=end, horizon_months=1)
+        out["ret_1m"] = r1m.reindex(out.index) if not r1m.empty else np.nan
     _PRED_CACHE[key] = (time.time(), out)
     return out
 
@@ -132,19 +139,12 @@ def backtest_alpha(
     if preds.empty:
         return {"available": False, "reason": "insufficient out-of-sample history"}
 
-    min_names = max((2 * topk) if long_short else topk, 10)
-    rows: dict[pd.Timestamp, float] = {}
-    for dt, g in preds.groupby(level="datetime"):
-        if len(g) < min_names:
-            continue
-        g = g.sort_values("alpha", ascending=False)
-        long_ret = float(g["ret"].head(topk).mean())
-        rows[dt] = (long_ret - float(g["ret"].tail(topk).mean())) if long_short else long_ret
-    ser = pd.Series(rows).sort_index()
+    ser = _portfolio_pnl(preds, topk=topk, long_short=long_short)
     if ser.empty:
         return {"available": False, "reason": "no out-of-sample month had enough investable names"}
 
     metrics = _risk_metrics(ser)
+    # IC stays measured at the model's native horizon (what it actually predicts).
     ic_stats = qlib_alpha.evaluate(preds["alpha"], preds["ret"])
 
     ff = _ff_monthly(artifact.jurisdiction, ser.index)
@@ -182,6 +182,8 @@ def backtest_alpha(
         "out_of_sample": True,
         "jurisdiction": artifact.jurisdiction,
         "label": artifact.label,
+        "horizon_months": artifact.horizon_months,
+        "rebalance": "monthly",
         "topk": topk,
         "long_short": long_short,
         "n_periods": int(ser.shape[0]),
@@ -217,6 +219,29 @@ def prewarm(jurisdiction: str = "US") -> None:
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+def _portfolio_pnl(preds: pd.DataFrame, *, topk: int, long_short: bool) -> pd.Series:
+    """Monthly rebalanced P&L series from walk-forward predictions.
+
+    Each month the names are ranked by the model's ``alpha`` (its native horizon), and
+    the portfolio books the realized **one-month** return (``ret_1m``) of the top-k —
+    long-only, or top-minus-bottom for long/short. Realizing 1m (not the multi-month
+    ``ret`` label) is the fix for the overlapping-window compounding that blew the
+    equity curve up ~170x. Falls back to ``ret`` only if ``ret_1m`` is absent.
+    """
+    pnl_col = "ret_1m" if ("ret_1m" in preds.columns and preds["ret_1m"].notna().any()) else "ret"
+    min_names = max((2 * topk) if long_short else topk, 10)
+    rows: dict[pd.Timestamp, float] = {}
+    for dt, g in preds.groupby(level="datetime"):
+        if len(g) < min_names:
+            continue
+        g = g.sort_values("alpha", ascending=False)
+        long_ret = g[pnl_col].head(topk).mean()
+        pnl = (long_ret - g[pnl_col].tail(topk).mean()) if long_short else long_ret
+        if pd.notna(pnl):
+            rows[dt] = float(pnl)
+    return pd.Series(rows, dtype=float).sort_index()
+
+
 def _risk_metrics(monthly_returns: pd.Series) -> dict[str, float]:
     from qlib.contrib.evaluate import risk_analysis
 

@@ -15,8 +15,12 @@ import {
   type QuantBacktestPoint,
   type QuantBacktestResponse,
   type QuantOptimizeResponse,
+  type QuantPerName,
+  type ScreenerRow,
 } from "@/lib/api";
 import { SectionCard } from "@/components/ui/SectionCard";
+import { PortfolioTable } from "./quant/PortfolioTable";
+import { ReturnDistribution } from "./quant/ReturnDistribution";
 
 type Status = "idle" | "running" | "done" | "error";
 
@@ -67,6 +71,10 @@ export function QuantView() {
   const [optStatus, setOptStatus] = useState<Status>("idle");
   const [opt, setOpt] = useState<QuantOptimizeResponse | null>(null);
   const [optErr, setOptErr] = useState("");
+  // Company metadata (logo, English name, valuation/growth metrics) + 2y price
+  // sparklines for the holdings table — fetched after each optimize for the book.
+  const [meta, setMeta] = useState<Map<string, ScreenerRow>>(new Map());
+  const [priceSeries, setPriceSeries] = useState<Map<string, number[]>>(new Map());
 
   const [alpha, setAlpha] = useState<QuantAlphaResponse | null>(null);
 
@@ -98,6 +106,8 @@ export function QuantView() {
     setJurisdiction(j);
     setUniverse(DEFAULT_UNIVERSES[j]);   // repopulate default tickers on market switch
     setOpt(null);
+    setMeta(new Map());
+    setPriceSeries(new Map());
     setBt(null);
     setBtStatus("idle");
   }
@@ -106,10 +116,12 @@ export function QuantView() {
     setOptStatus("running");
     setOptErr("");
     try {
-      setOpt(await api.quantOptimize({
+      const res = await api.quantOptimize({
         jurisdiction, tickers, optimizer, risk_model: riskModel, alpha_source: alphaSource, label: horizon,
-      }));
+      });
+      setOpt(res);
       setOptStatus("done");
+      void loadHoldingsData(res);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setOptErr(/network|fetch|timeout|failed to fetch/i.test(msg)
@@ -117,6 +129,44 @@ export function QuantView() {
         : msg);
       setOptStatus("error");
     }
+  }
+
+  // Enrich the book with company metadata + 2y price history for the holdings table.
+  // Best-effort: any miss leaves that cell as a graceful placeholder.
+  async function loadHoldingsData(res: QuantOptimizeResponse) {
+    const jur = jurisdiction === "JP" ? "JP" : "US";
+    const held = (res.per_name ?? res.weights.map((w) => ({ ticker: w.ticker, weight: w.weight })))
+      .filter((r) => r.weight > 1e-4)
+      .map((r) => r.ticker);
+    if (!held.length) return;
+    setMeta(new Map());
+    setPriceSeries(new Map());
+
+    // JP names are keyed by their .T-suffixed primary_ticker in the company dimension,
+    // but the optimizer returns the bare code — re-add the suffix for the metadata join.
+    const dimTicker = (t: string) => (jur === "JP" && !/\.T$/i.test(t) ? `${t}.T` : t);
+    api.screenerRun({
+      universe: { jurisdiction, portfolio_tickers: held.map(dimTicker) },
+      filters: {}, sort: { key: "market_cap_usd", dir: "desc" }, limit: Math.max(held.length, 1),
+    })
+      .then((r) => {
+        const mp = new Map<string, ScreenerRow>();
+        for (const row of r.rows) {
+          mp.set(row.ticker.toUpperCase(), row);
+          mp.set(row.ticker.replace(/\.T$/i, "").toUpperCase(), row);  // JP: match the .T-stripped code
+        }
+        setMeta(mp);
+      })
+      .catch(() => {});
+
+    const from = new Date(Date.now() - 2.05 * 365.25 * 864e5).toISOString().slice(0, 10);
+    Promise.all(
+      held.map((t) =>
+        api.prices(t, jur, from)
+          .then((pr) => [t, downsample(pr.prices.map((p) => p.close), 64)] as const)
+          .catch(() => [t, [] as number[]] as const)
+      )
+    ).then((pairs) => setPriceSeries(new Map(pairs)));
   }
 
   async function runBacktest() {
@@ -140,6 +190,17 @@ export function QuantView() {
     () => (opt ? [...opt.weights].sort((a, b) => b.weight - a.weight) : []),
     [opt]
   );
+  // Holdings for the enhanced table: the enriched per_name rows, or a metrics-less
+  // fallback derived from raw weights if an older backend omitted them.
+  const holdings = useMemo<QuantPerName[]>(() => {
+    if (!opt) return [];
+    if (opt.per_name?.length) return opt.per_name;
+    return opt.weights.map((w) => ({
+      ticker: w.ticker, weight: w.weight,
+      expected_return_annual: NaN, expected_return_horizon: NaN,
+      forward_vol_annual: NaN, forward_vol_horizon: NaN, alpha_source: "model" as const,
+    }));
+  }, [opt]);
   const perf = bt?.performance;
   const reg = bt?.factor_regression;
 
@@ -216,7 +277,7 @@ export function QuantView() {
         {optErr ? <div className="mt-3 rounded-md bg-red-50 px-3 py-2 text-[12px] text-red-700">{optErr}</div> : null}
 
         {opt ? (
-          <div className="mt-4">
+          <div className="mt-4 space-y-4">
             <div className="flex flex-wrap gap-5 text-[13px]">
               <Stat label="Backend" value={OPTIMIZER_LABELS[opt.backend] || opt.backend} />
               <Stat label="Exp. return (ann.)" value={pctFmt(opt.expected_return_annual)} />
@@ -224,31 +285,27 @@ export function QuantView() {
               <Stat label="Sharpe" value={numFmt(opt.sharpe)} />
               <Stat label="Positions" value={String(sortedWeights.filter((w) => w.weight > 1e-4).length)} />
             </div>
-            {opt.warnings?.length ? <div className="mt-2 text-[11px] text-amber-600">{opt.warnings.join(" · ")}</div> : null}
-            <div className="mt-3 overflow-x-auto">
-              <table className="w-full text-[12px]">
-                <thead>
-                  <tr className="border-b border-border text-left text-muted">
-                    <th className="py-1.5 pr-3">Ticker</th>
-                    <th className="py-1.5 pr-3 text-right">Weight</th>
-                    <th className="py-1.5">Allocation</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedWeights.filter((w) => w.weight > 1e-4).map((w) => (
-                    <tr key={w.ticker} className="border-b border-border/60">
-                      <td className="py-1.5 pr-3 font-medium text-navy">{w.ticker}</td>
-                      <td className="py-1.5 pr-3 text-right tabular-nums">{pctFmt(w.weight)}</td>
-                      <td className="py-1.5">
-                        <div className="h-2 rounded bg-panel">
-                          <div className="h-2 rounded bg-navy" style={{ width: `${Math.min(100, w.weight * 100)}%` }} />
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            {opt.warnings?.length ? <div className="text-[11px] text-amber-600">{opt.warnings.join(" · ")}</div> : null}
+
+            <PortfolioTable
+              perName={holdings}
+              meta={meta}
+              prices={priceSeries}
+              jurisdiction={jurisdiction}
+              horizonMonths={opt.horizon_months ?? 1}
+            />
+
+            {opt.distribution ? (
+              <div className="rounded-lg border border-border bg-panel/40 p-4">
+                <div className="flex items-baseline gap-2">
+                  <span className="label">Return distribution</span>
+                  <span className="text-[10px] text-muted">historical simulation · optimizer weights</span>
+                </div>
+                <div className="mt-2">
+                  <ReturnDistribution dist={opt.distribution} horizonMonths={opt.horizon_months ?? 1} />
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </SectionCard>
@@ -327,7 +384,8 @@ export function QuantView() {
             ) : null}
 
             <div className="text-[10.5px] text-muted">
-              Out-of-sample walk-forward · investable universe (≥ $2B) · equal-weight top-{bt.topk}
+              Out-of-sample walk-forward · ranked on the {bt.horizon_months ?? horizonShort(horizon)}-month alpha,
+              {" "}rebalanced monthly · investable universe (≥ $2B) · equal-weight top-{bt.topk}
               {bt.long_short ? " long/short" : " long-only"} · gross of costs · {bt.n_periods} months.
             </div>
           </div>
@@ -367,6 +425,17 @@ export function QuantView() {
       </SectionCard>
     </div>
   );
+}
+
+// Thin a dense daily price series down to ~`target` points for a crisp sparkline.
+function downsample(values: number[], target: number): number[] {
+  const clean = values.filter((v) => typeof v === "number" && isFinite(v));
+  if (clean.length <= target) return clean;
+  const step = clean.length / target;
+  const out: number[] = [];
+  for (let i = 0; i < target; i++) out.push(clean[Math.min(clean.length - 1, Math.floor(i * step))]);
+  out.push(clean[clean.length - 1]);
+  return out;
 }
 
 const selCls = "rounded-md border border-border bg-panel px-2 py-1.5 text-[13px]";

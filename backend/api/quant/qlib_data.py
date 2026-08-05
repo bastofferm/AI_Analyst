@@ -36,6 +36,56 @@ LABEL = "label"
 LABEL_COL = "y"
 
 
+def annualize_return(period_return: float, horizon_months: int) -> float:
+    """Geometrically annualize a compounded ``horizon_months``-return.
+
+    The alpha label / prediction is the return compounded over the whole horizon
+    (``forward_6m`` = the six-month compounded return), so the right annualization
+    is geometric, ``(1 + r) ** (12 / h) - 1`` — not the linear ``r * 12 / h`` we
+    used before, which over/under-states whenever ``h != 12``. Guards a base that
+    a large negative return could push below zero (fractional powers of a negative
+    are complex) by flooring at total loss.
+    """
+    h = max(1, int(horizon_months))
+    base = 1.0 + float(period_return)
+    if base <= 0.0:
+        return -1.0
+    return base ** (12.0 / h) - 1.0
+
+
+def realized_forward_returns(
+    jurisdiction: str = "US",
+    *,
+    start: date | str | None = None,
+    end: date | str | None = None,
+    horizon_months: int = 1,
+) -> pd.Series:
+    """Realized forward return per ``(datetime, instrument)`` at ``horizon_months``.
+
+    A thin, label-independent view over the same monthly-return panel the training
+    label is built from (``xbrl_sec.sec.cycle.ic._load_monthly_returns``). The
+    backtest uses the ``horizon_months=1`` series as the *realized* month-over-month
+    P&L — decoupled from the (possibly multi-month) horizon the model *ranks* on —
+    so a longer-horizon signal is no longer compounded on overlapping windows.
+    Returns an empty Series when the warehouse has no rows in range.
+    """
+    from xbrl_sec.sec.cycle.ic import _load_monthly_returns  # lazy: DB + project deps
+
+    col = f"forward_{max(1, int(horizon_months))}m"
+    if col not in LABEL_HORIZONS:
+        raise ValueError(f"unsupported horizon {horizon_months!r}; expected one of {HORIZON_MONTHS.values()}")
+    returns = _load_monthly_returns(jurisdiction, start=start, end=end, forward_months=int(horizon_months))
+    if returns.empty or col not in returns.columns:
+        return pd.Series(dtype=float, name=col)
+    r = returns[["ticker", "date", col]].dropna(subset=[col]).copy()
+    r["instrument"] = r["ticker"].astype(str).str.replace(r"\.[Tt]$", "", regex=True)
+    r["datetime"] = pd.to_datetime(r["date"], errors="coerce")
+    r = r.dropna(subset=["datetime"])
+    if r.empty:
+        return pd.Series(dtype=float, name=col)
+    return r.set_index(["datetime", "instrument"])[col].astype(float)
+
+
 def feature_metric_ids(
     jurisdiction: str,
     *,

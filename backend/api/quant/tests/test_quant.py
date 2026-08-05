@@ -75,6 +75,81 @@ def test_unknown_backend_raises():
 
 
 # --------------------------------------------------------------------------- #
+# Annualization + return distribution + backtest de-overlap (no DB)
+# --------------------------------------------------------------------------- #
+def test_annualize_return_is_geometric():
+    from api.quant import qlib_data
+
+    assert qlib_data.annualize_return(0.0, 6) == pytest.approx(0.0)
+    # a compounded 6-month return annualizes by squaring (12/6), not doubling.
+    assert qlib_data.annualize_return(0.08, 6) == pytest.approx(1.08**2 - 1.0)
+    assert qlib_data.annualize_return(0.04, 3) == pytest.approx(1.04**4 - 1.0)
+    # a 12-month return annualizes to itself; a total wipeout floors at -100%.
+    assert qlib_data.annualize_return(0.15, 12) == pytest.approx(0.15)
+    assert qlib_data.annualize_return(-1.5, 6) == -1.0
+
+
+def test_portfolio_return_distribution_moments_and_histogram():
+    from api.quant import simulate
+
+    rng = np.random.default_rng(0)
+    T, N = 1800, 3
+    drift = np.array([0.0004, 0.0002, 0.0006])
+    R = rng.standard_normal((T, N)) * 0.012 + drift
+    w = np.array([0.5, 0.3, 0.2])
+
+    d = simulate.portfolio_return_distribution(R, w, horizon_months=6)
+    assert d["available"] and d["method"] == "historical_simulation"
+    assert d["window_days"] == 126 and d["n_samples"] == T - 126 + 1
+    m = d["moments"]
+    assert set(m) == {"mean", "variance", "std", "skewness", "kurtosis"}
+    assert m["variance"] > 0 and m["std"] == pytest.approx(np.sqrt(m["variance"]))
+    # ~126-day compounded drift of the book is a few percent, and clearly positive.
+    assert 0.0 < m["mean"] < 0.25
+    # histogram is a probability density (integrates to ~1) and the KDE curve is populated.
+    area = sum((b["x1"] - b["x0"]) * b["density"] for b in d["histogram"])
+    assert area == pytest.approx(1.0, abs=1e-6)
+    assert len(d["curve"]) == 96 and all(pt["y"] >= 0 for pt in d["curve"])
+    # annualized context: √time vol scaling, geometric mean.
+    assert d["annualized"]["vol"] == pytest.approx(m["std"] * np.sqrt(2.0))
+
+
+def test_distribution_guards_short_history():
+    from api.quant import simulate
+
+    R = np.random.default_rng(1).standard_normal((100, 3)) * 0.01
+    out = simulate.portfolio_return_distribution(R, np.ones(3) / 3, horizon_months=12)
+    assert out["available"] is False and "reason" in out
+
+
+def test_backtest_pnl_uses_one_month_return_not_horizon_label():
+    """The P&L must book realized 1m returns, not the (much larger) horizon label —
+    this is the fix for the overlapping-window compounding that ballooned the curve."""
+    import pandas as pd
+
+    from api.quant import qlib_backtest
+
+    dates = pd.to_datetime(["2023-01-31", "2023-02-28", "2023-03-31"])
+    names = [f"N{i:02d}" for i in range(15)]
+    idx = pd.MultiIndex.from_product([dates, names], names=["datetime", "instrument"])
+    rng = np.random.default_rng(3)
+    n = len(idx)
+    alpha = rng.standard_normal(n)
+    ret_1m = rng.standard_normal(n) * 0.02 + 0.01          # ~1% monthly
+    preds = pd.DataFrame({"alpha": alpha, "ret_1m": ret_1m, "ret": ret_1m * 6.0}, index=idx)
+
+    ser = qlib_backtest._portfolio_pnl(preds, topk=5, long_short=False)
+    assert len(ser) == 3
+    # Reconstruct the expected top-5-by-alpha mean of ret_1m for each month.
+    for dt in dates:
+        g = preds.xs(dt, level="datetime").sort_values("alpha", ascending=False)
+        assert ser.loc[dt] == pytest.approx(float(g["ret_1m"].head(5).mean()))
+    # And crucially NOT the 6x-inflated horizon label.
+    monthly_mag = ser.abs().mean()
+    assert monthly_mag < 0.10  # realistic monthly P&L, not a 6-month compounded figure
+
+
+# --------------------------------------------------------------------------- #
 # Scoring: exact legacy fallback + alpha blend + IC re-split (no DB)
 # --------------------------------------------------------------------------- #
 _ROWS = [
