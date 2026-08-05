@@ -1,0 +1,516 @@
+\documentclass[11pt]{article}
+\usepackage{mzqastyle}
+\setrunningtitle{AI Analyst --- Postgres \& Data Warehouse Setup}
+
+\begin{document}
+
+\mzqatitlepage
+  {Setup guide --- for dummies}
+  {Postgres Warehouse Setup}
+  {Standing up the database and pulling SEC, EDINET \& Yahoo Finance data from a fresh clone}
+  {This repo ships the committee application --- the FastAPI backend, the LangGraph
+   tribunal, the Next.js frontend --- and the \emph{code} that builds the fundamentals
+   warehouse. It does \textbf{not} ship the warehouse itself: no database dump, no CSVs,
+   no pre-loaded Postgres instance. Every fact in \code{fact\_fundamentals\_us},
+   \code{fact\_prices\_intl}, and the other 190 tables has to be pulled from public sources
+   --- SEC EDGAR, Japan's EDINET, and Yahoo Finance --- by running the CLI tools already in
+   \code{backend/xbrl\_sec/}. This volume is a start-to-finish, screenshot-free walkthrough
+   for someone who has just cloned the repository and has an empty machine: which programs
+   to install and where to get them, how to stand up Postgres, how to apply the schema, and
+   the exact commands that kick off each data-acquisition run --- with the quirks and
+   gotchas the code itself doesn't warn you about.}
+  {Postgres \& Data Warehouse Setup Guide \quad·\quad Generated 5 August 2026}
+
+\mzqatoc
+\clearpage
+
+%======================================================================
+\section{What you are building}
+
+Three independent pieces have to exist before the app shows real numbers: a running
+Postgres server, an empty \code{xbrl\_sec} database with the schema applied, and that
+database filled in by three separate ingestion pipelines pulling from public data
+sources. The application itself (\code{backend/api/}) only ever \emph{reads} --- it has
+no write path, and no scheduler triggers any of this for you.
+
+\begin{figure}[tp]
+\centering
+\begin{tikzpicture}[node distance=8mm and 9mm, font=\sffamily\small]
+  \node[term] (git) {Clone repo};
+  \node[proc, right=of git, minimum width=30mm] (tools) {Install Postgres,\\\scriptsize Python, Node, Git};
+  \node[proc, right=of tools, minimum width=30mm] (schema) {\code{apply-schema}\\\scriptsize 140 SQL files};
+  \node[store, right=of schema, minimum width=26mm] (db) {\code{xbrl\_sec}\\\scriptsize empty tables};
+
+  \node[data, below=13mm of tools, minimum width=26mm] (sec) {SEC EDGAR\\\scriptsize 10-K/10-Q XBRL};
+  \node[data, below=13mm of schema, minimum width=26mm] (edinet) {EDINET\\\scriptsize JP XBRL};
+  \node[data, below=13mm of db, xshift=6mm, minimum width=26mm] (yahoo) {Yahoo Finance\\\scriptsize prices \& intl fundamentals};
+
+  \node[llm, below=13mm of git, minimum width=30mm] (app) {Committee app\\\scriptsize read-only, port 8027/3027};
+
+  \draw[arr] (git) -- (tools);
+  \draw[arr] (tools) -- (schema);
+  \draw[arr] (schema) -- (db);
+  \draw[arr] (sec) -- (db);
+  \draw[arr] (edinet) -- (db);
+  \draw[arr] (yahoo) -- (db);
+  \draw[arr] (db.south) to[out=-90,in=0] (app.east);
+\end{tikzpicture}
+\caption{End-to-end picture: install tools $\to$ create schema $\to$ three independent
+ingestion pipelines fill the same warehouse $\to$ the application reads it. Nothing in
+this chain runs automatically; every step below is a command you type.}
+\end{figure}
+
+\begin{keybox}[The one thing to internalize]
+There is \textbf{no} \code{docker-compose.yml}, \textbf{no} Makefile, \textbf{no}
+Airflow/Prefect DAG, and \textbf{no} scheduled job anywhere in this repo. Everything in
+this guide is a manual command run from a terminal, in the order given. If you skip a
+step, the next one will usually fail loudly (connection refused, table does not exist)
+rather than silently do the wrong thing.
+\end{keybox}
+
+%======================================================================
+\section{Before you start: tools to install}
+
+Install these on a fresh Windows machine, in this order. Restart your terminal after
+each installer that touches environment variables (Git, Python, Node all do).
+
+\begin{center}\small
+\begin{tabular}{@{}>{\bfseries\color{navy}}p{2.6cm} p{5.7cm} p{6.3cm}@{}}
+\toprule
+\tabhead{Tool} & \normalfont\tabhead{Why} & \normalfont\tabhead{Where to get it} \\
+\midrule
+Git & Clone the repository & \code{git-scm.com} --- \emph{Downloads for Windows} \\
+PostgreSQL 16 & The database server itself; the code assumes an already-running server
+  and never installs one for you & \code{postgresql.org/download} $\to$ Windows $\to$ the
+  EnterpriseDB installer (bundles \code{psql} and pgAdmin 4) \\
+pgAdmin 4 (optional) & GUI to browse tables while you work; installed automatically by
+  the EnterpriseDB installer above & bundled with the PostgreSQL installer, or standalone
+  at \code{pgadmin.org} \\
+Python 3.13 (64-bit) & Runs the ingestion CLIs and the FastAPI backend & \code{python.org/downloads}
+  --- tick \emph{Add python.exe to PATH} during install \\
+Node.js 18 or newer & Builds/runs the Next.js frontend & \code{nodejs.org} --- the LTS
+  installer \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{notebox}[Why Python 3.13 specifically]
+The repo vendors a prebuilt \code{psycopg2} wheel for \code{cp313-win\_amd64}
+(\code{backend/xbrl\_sec/\_vendor/psycopg2/}) as a fallback if \code{pip install} can't
+find a compatible binary. Any recent 3.11+ interpreter will run the code, but 3.13
+matches what's already vendored and avoids a \code{pip} build-from-source step for
+psycopg2 on Windows.
+\end{notebox}
+
+%======================================================================
+\section{Step 1 --- install and stand up Postgres}
+
+\begin{enumerate}
+  \item Run the PostgreSQL installer. When prompted, set a password for the
+        \code{postgres} superuser --- write it down, you'll need it in Step 3.
+  \item Accept the default port (\code{5432}) and default locale unless you have a
+        reason not to.
+  \item Leave Stack Builder's extra-component screen empty (nothing here needs
+        PostGIS, etc.) and finish the install.
+  \item Open a terminal and confirm the server is reachable:
+\begin{lstlisting}[language=bash]
+psql -U postgres -h 127.0.0.1 -c "SELECT version();"
+\end{lstlisting}
+        It will prompt for the password you set in step 1. A version string back means
+        the server is up.
+  \item Create the empty database the app expects (name and owner both matter --- the
+        code's defaults assume exactly this):
+\begin{lstlisting}[language=bash]
+psql -U postgres -h 127.0.0.1 -c "CREATE DATABASE xbrl_sec;"
+\end{lstlisting}
+\end{enumerate}
+
+\begin{specbox}
+\tabhead{Defaults baked into the code.}\;
+Both connection paths in this repo default to \code{postgresql://postgres@127.0.0.1:5432/xbrl\_sec}
+with schema \code{sec} (\code{backend/xbrl\_sec/sec/settings.py}, \code{backend/api/settings.py}).
+If you used a different database name, port, or role when installing Postgres, you must
+override \code{DATABASE\_URL} and \code{XBRL\_SEC\_DATABASE\_URL} in \code{.env} to match
+--- see Step 3.
+\end{specbox}
+
+%======================================================================
+\section{Step 2 --- get the code and the Python/Node environments}
+
+\begin{enumerate}
+  \item Clone and enter the repository:
+\begin{lstlisting}[language=bash]
+git clone <your-fork-or-remote-url> AI_Analyst
+cd AI_Analyst
+\end{lstlisting}
+  \item Create a virtual environment and install the backend's \emph{lean} dependency
+        set (no torch/dash --- that's \code{requirements-full.txt}, which this guide
+        does not need):
+\begin{lstlisting}[language=bash]
+py -3 -m venv .venv
+.\.venv\Scripts\pip install -r backend\requirements.txt
+\end{lstlisting}
+  \item Install the frontend dependencies (only needed once you want to see data in the
+        browser --- the ingestion CLIs in this guide don't touch the frontend):
+\begin{lstlisting}[language=bash]
+cd frontend
+npm install
+cd ..
+\end{lstlisting}
+\end{enumerate}
+
+\begin{notebox}[No \code{pyproject.toml}, no Poetry, no uv]
+Dependency management here is plain \code{pip install -r requirements.txt}. There is
+also no SQLAlchemy and no Alembic anywhere in this codebase --- the schema is raw SQL
+DDL (Section~\ref{sec:schema}), not an ORM.
+\end{notebox}
+
+%======================================================================
+\section{Step 3 --- environment variables}
+
+Copy the template and fill in the values that matter to you:
+
+\begin{lstlisting}[language=bash]
+copy .env.example .env
+\end{lstlisting}
+
+The Postgres \emph{password} is deliberately not a line in \code{.env} at all --- both
+connection paths (\code{psycopg2} and \code{asyncpg}) read it from the \code{PGPASSWORD}
+process environment variable at connect time. Set it once, permanently, from any
+terminal:
+
+\begin{lstlisting}[language=bash]
+setx PGPASSWORD "the-password-you-set-in-step-1"
+\end{lstlisting}
+
+\code{setx} writes a \emph{user} environment variable in Windows --- open a new terminal
+window afterwards for it to take effect.
+
+\begin{center}\small
+\begin{tabular}{@{}>{\ttfamily\footnotesize\color{navy}}p{4.6cm} p{8.2cm}@{}}
+\toprule
+\normalfont\tabhead{Variable} & \normalfont\tabhead{Purpose} \\
+\midrule
+PGPASSWORD & Postgres password, read directly by libpq --- set with \code{setx}, not in \code{.env}. \\
+DATABASE\_URL / DB\_SCHEMA & FastAPI backend's async (asyncpg) connection --- default matches Step 1. \\
+XBRL\_SEC\_DATABASE\_URL / XBRL\_SEC\_SCHEMA & Ingestion layer's sync (psycopg2) connection --- same default, override together with the two above if you changed the DB name. \\
+EDINET\_API\_KEY & Required in practice for JP EDINET downloads --- see Section~\ref{sec:edinet}. \\
+SEC\_HTTP\_USER\_AGENT & Read by the MD\&A text-extraction module only --- see the caveat in Section~\ref{sec:sec}. \\
+DEEPSEEK\_API\_KEY (or another provider key) & Only needed for LLM-scored steps: MD\&A sentiment, 13F CUSIP matching, news scoring, and the committee itself. Not needed to just fill the fundamentals/price tables. \\
+MZQA\_ROOT & Defaults to a machine-specific path baked into \code{settings.py}; override it to this repo's root if a source throws \code{FileNotFoundError} pointing at a \code{...\textbackslash MZQA} path. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%======================================================================
+\section{Step 4 --- create the schema}
+\label{sec:schema}
+
+The entire warehouse schema is \textbf{140 sequential, idempotent SQL files} in
+\code{backend/xbrl\_sec/sec/sql/} (\code{001\_initial\_schema.sql} through
+\code{135\_quant\_alpha\_horizons.sql}). Every \code{CREATE TABLE}/\code{CREATE INDEX} is
+guarded with \code{IF NOT EXISTS}, so re-running the whole set against an already-current
+database is safe and is also how you pick up new migrations later.
+
+\begin{lstlisting}[language=bash]
+$env:PYTHONPATH = "$PWD\backend"
+.\.venv\Scripts\python -m xbrl_sec.sec.cli apply-schema
+\end{lstlisting}
+
+This runs each file in its own transaction and prints \code{applied <file>} or
+\code{FAILED <file>: <error>} per file --- one failure does not abort the rest, so check
+the summary line at the end reads \code{failed=0}. It only creates structure; it loads no
+data.
+
+\begin{modelbox}{What gets created}
+Two Postgres schemas: \code{sec} (everything --- fundamentals, prices, 13F/insider, MD\&A,
+macro, ETFs, quant) and \code{news} (articles, feeds, sentiment). 192 distinct tables in
+total. The groups that matter for the acquisition runs in Sections~5--7:
+
+\begin{itemize}
+  \item \textbf{Run/pipeline metadata} --- \code{pipeline\_stage\_run}, \code{pipeline\_entity\_state},
+        \code{source\_filing\_state}: per-entity watermarks so incremental runs know what's
+        already been pulled.
+  \item \textbf{Company/entity master} --- \code{dim\_company\_us}, \code{dim\_company\_jp},
+        \code{dim\_company\_intl}, \code{ref\_entity\_ticker}: one row per known company,
+        cross-referenced by CIK / EDINET code / ticker.
+  \item \textbf{Raw filing facts} --- \code{fact\_fundamentals\_us}, \code{fact\_fundamentals\_jp}:
+        the as-filed XBRL concept values, before any standardization.
+  \item \textbf{Standardized financials} --- \code{fact\_fundamentals\_std\_us/\_jp},
+        \code{fact\_metrics\_us/\_jp}, \code{fact\_metrics\_recon\_us/\_jp}: governed
+        line-items and derived metrics with source traceability.
+  \item \textbf{International equities} --- \code{fact\_yahoo\_fundamental\_metric},
+        \code{fact\_yahoo\_statement\_item}, \code{fact\_metrics\_intl}, \code{fact\_prices\_intl},
+        \code{ref\_yahoo\_index*}: the Yahoo-sourced non-US/JP universe.
+  \item \textbf{Prices} --- \code{fact\_prices\_us}, \code{fact\_prices\_jp},
+        \code{fact\_market\_metrics}, \code{fact\_stock\_split\_event}.
+  \item \textbf{13F / insider, MD\&A, news, macro/factor, ETFs} --- each acquisition
+        pipeline in Sections~5--7 writes to its own subset; see the table beside each
+        command block below.
+\end{itemize}
+\end{modelbox}
+
+%======================================================================
+\section{Step 5 --- pull SEC EDGAR data (US fundamentals)}
+\label{sec:sec}
+
+\begin{figure}[tp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[node distance=6mm and 7mm, font=\sffamily\footnotesize]
+  \node[term] (start) {\code{run US}};
+  \node[proc, right=of start] (master) {company\\master};
+  \node[proc, right=of master] (facts) {companyfacts\\/ zip download};
+  \node[proc, right=of facts] (xbrl) {XBRL package\\download};
+  \node[proc, right=of xbrl] (index) {filing\\index};
+
+  \node[proc, below=10mm of facts] (link) {linkbase\\extract};
+  \node[proc, right=of link] (parse) {raw\\parse};
+  \node[proc, right=of parse] (std) {standardize};
+  \node[proc, right=of std] (tick) {ticker\\map};
+
+  \node[proc, below=10mm of parse] (metrics) {metrics};
+  \node[proc, right=of metrics] (recon) {recon};
+  \node[data, right=of recon] (validate) {validate};
+  \node[store, right=of validate] (db) {\code{fact\_fundamentals\_us}\\\scriptsize \code{fact\_metrics\_us}};
+
+  \draw[arr] (start) -- (master); \draw[arr] (master) -- (facts);
+  \draw[arr] (facts) -- (xbrl); \draw[arr] (xbrl) -- (index);
+  \draw[arr] (index.south) to[out=-90,in=90] (link.north);
+  \draw[arr] (link) -- (parse); \draw[arr] (parse) -- (std); \draw[arr] (std) -- (tick);
+  \draw[arr] (tick.south) to[out=-90,in=90] (metrics.north);
+  \draw[arr] (metrics) -- (recon); \draw[arr] (recon) -- (validate);
+  \draw[arr] (validate) -- (db);
+\end{tikzpicture}}
+\caption{\code{run US --download} --- the ordered stage chain (\code{backend/xbrl\_sec/sec/pipelines/us.py}).
+Any stage can also be run alone (\code{download}, \code{extract}, \code{parse}, \code{metrics}, \dots)
+to resume a partial run.}
+\end{figure}
+
+\begin{lstlisting}[language=bash]
+$env:PYTHONPATH = "$PWD\backend"
+
+# Everything, US, downloading what's missing
+python -m xbrl_sec.sec.cli run US --download
+
+# Just refresh the list of companies (new listings/delistings), no filings
+python -m xbrl_sec.sec.cli refresh-master US --download
+
+# Scope to specific companies by CIK instead of the whole universe
+python -m xbrl_sec.sec.cli run US --entity 0000320193 --download
+\end{lstlisting}
+
+Writes to: \code{dim\_company\_us}, \code{fact\_fundamentals\_us}, \code{fact\_fundamentals\_std\_us},
+\code{fact\_metrics\_us}, \code{fact\_metrics\_recon\_us}, \code{source\_filing\_state}, \code{ref\_entity\_ticker}.
+
+\begin{notebox}[No SEC account or API key needed --- but read this before setting \code{SEC\_HTTP\_USER\_AGENT}]
+SEC EDGAR requires every client to send an identifying \code{User-Agent} header (name $+$
+contact email) and self-throttle to roughly 10 requests/second --- it does not require
+registration or an API key. The two modules that actually talk to EDGAR,
+\code{sec\_download.py} and \code{sec\_xbrl.py}, already satisfy this: they hardcode a
+compliant contact string and sleep between requests (roughly 8--9 req/s). \textbf{Setting
+\code{SEC\_HTTP\_USER\_AGENT} in \code{.env} will not change what these two modules send} ---
+it is only read by the separate MD\&A HTML text-extraction module. If you want SEC to see
+\emph{your own} contact address on these requests, edit the \code{\_USER\_AGENT} constant
+near the top of \code{sec\_download.py} and \code{sec\_xbrl.py} directly.
+\end{notebox}
+
+%======================================================================
+\section{Step 6 --- pull EDINET data (Japan fundamentals)}
+\label{sec:edinet}
+
+\begin{enumerate}
+  \item \textbf{Get an EDINET API key.} EDINET's document/XBRL API (v2, base URL
+        \code{api.edinet\allowbreak-fsa.go.jp/api/v2}) is public and free, but the current
+        API generation expects a subscription key sent as the
+        \code{Ocp-Apim-Subscription-Key} header. Register for one on the EDINET
+        disclosure portal (\code{disclosure2.edinet\allowbreak-fsa.go.jp}) under its API
+        user-registration section --- this repo does not link the exact registration
+        page, and the flow may be Japanese-language only.
+  \item Set the key once, permanently:
+\begin{lstlisting}[language=bash]
+setx EDINET_API_KEY "your-edinet-subscription-key"
+\end{lstlisting}
+        (On Windows the code also falls back to reading this from the registry
+        \code{HKCU\textbackslash Environment} if the process environment variable isn't
+        set --- \code{setx} writes exactly there, so either path works after a fresh
+        terminal.)
+  \item Run the JP pipeline, same shape as US:
+\begin{lstlisting}[language=bash]
+python -m xbrl_sec.sec.cli run JP --download
+\end{lstlisting}
+\end{enumerate}
+
+Writes to: \code{dim\_company\_jp}, \code{fact\_fundamentals\_jp}, \code{fact\_fundamentals\_std\_jp},
+\code{fact\_metrics\_jp}, \code{fact\_metrics\_recon\_jp}, \code{source\_filing\_state}, \code{ref\_entity\_ticker}.
+
+\begin{notebox}[The code does not hard-fail without a key]
+If \code{EDINET\_API\_KEY} is unset, the request-building code simply omits the
+subscription header rather than raising an error up front --- EDINET's server will then
+reject or heavily rate-limit the calls itself, which shows up as widespread download
+failures partway through a run, not a clean error at startup. If a JP run is failing
+broadly, check the key first.
+\end{notebox}
+
+\begin{specbox}
+\tabhead{Filing type / document-code filter.}\;
+\code{--filing-type} accepts EDINET document-type codes and is validated against a fixed
+set: \code{010, 020, 030, 040, 050, 120, 130, 140, 150, 160, 170}. An unrecognized code
+raises a \code{ValueError} listing the valid set --- pass it (repeatable) to scope a run
+to, e.g., only annual securities reports.
+\end{specbox}
+
+%======================================================================
+\section{Step 7 --- pull Yahoo Finance data (prices \& international equities)}
+
+Two independent Yahoo-based pipelines exist; neither needs an API key or registration ---
+both use unauthenticated \code{yfinance} calls with a self-throttled, custom User-Agent.
+
+\subsection*{7a. US price history and splits}
+
+\begin{lstlisting}[language=bash]
+# US-only price history (default fetches BOTH US and JP -- --skip-jp scopes to US)
+python -m xbrl_sec.sec.cli fetch-prices --skip-jp
+
+# Stock splits (jurisdiction is a flag here, defaulting to US)
+python -m xbrl_sec.sec.cli fetch-stock-splits --jurisdiction US
+
+# Derived market items (betas, etc.) -- no jurisdiction concept, always US
+python -m xbrl_sec.sec.cli derive-market-items
+\end{lstlisting}
+
+\begin{notebox}[A bare \code{US} positional argument will error]
+Older notes (including this repo's own \code{docs/data\_pipeline.md}) show
+\code{fetch-prices US}, \code{fetch-stock-splits US}, \code{derive-market-items US}. None
+of the three commands accept a bare positional jurisdiction argument in the current
+\code{cli.py} --- \code{fetch-prices} takes \code{--skip-us}/\code{--skip-jp} flags
+(default: both), \code{fetch-stock-splits} takes \code{--jurisdiction} (default \code{US}),
+and \code{derive-market-items} has no jurisdiction argument at all. Use the forms above.
+\end{notebox}
+
+\subsection*{7b. International equities (non-US/JP)}
+
+\begin{figure}[tp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[node distance=7mm and 8mm, font=\sffamily\footnotesize]
+  \node[term] (start) {\code{run-yahoo-global}};
+  \node[proc, right=of start, minimum width=32mm] (disc) {discover-yahoo-tickers\\\scriptsize Wikipedia $+$ Yahoo screener};
+  \node[proc, right=of disc, minimum width=32mm] (fund) {fetch-yahoo-fundamentals};
+  \node[proc, right=of fund, minimum width=28mm] (px) {fetch-yahoo-prices};
+  \node[llm, right=of px, minimum width=30mm] (met) {compute-intl-metrics};
+  \node[store, below=10mm of met, minimum width=26mm] (db) {\code{fact\_metrics\_intl}\\\scriptsize \code{fact\_prices\_intl}};
+
+  \draw[arr] (start) -- (disc); \draw[arr] (disc) -- (fund);
+  \draw[arr] (fund) -- (px); \draw[arr] (px) -- (met);
+  \draw[arr] (met) -- (db);
+\end{tikzpicture}}
+\caption{\code{run-yahoo-global} chains discovery $\to$ fundamentals $\to$ prices $\to$
+metrics. Each stage is also an independent subcommand for resuming or re-running one
+piece.}
+\end{figure}
+
+\begin{lstlisting}[language=bash]
+python -m xbrl_sec.sec.cli discover-yahoo-tickers    # -> dim_company_intl, ref_yahoo_index*
+python -m xbrl_sec.sec.cli fetch-yahoo-fundamentals  # -> fact_yahoo_fundamental_metric, fact_yahoo_statement_item
+python -m xbrl_sec.sec.cli fetch-yahoo-prices        # -> fact_prices_intl
+python -m xbrl_sec.sec.cli compute-intl-metrics      # -> fact_metrics_intl
+python -m xbrl_sec.sec.cli ingest-fx-intl            # -> fact_fx (or refresh-intl-fx for latest-only)
+python -m xbrl_sec.sec.cli backfill-intl-gics        # no network -- fills GICS from stored strings
+python -m xbrl_sec.sec.cli health-yahoo-global        # coverage / QA report
+
+# Or the whole thing in one shot: discovery -> fundamentals -> prices -> metrics
+python -m xbrl_sec.sec.cli run-yahoo-global
+\end{lstlisting}
+
+%======================================================================
+\section{Step 8 --- the full from-scratch bootstrap, in order}
+
+Putting Steps 4--7 together for a brand-new warehouse:
+
+\begin{lstlisting}[language=bash]
+$env:PYTHONPATH = "$PWD\backend"
+
+# 1. Schema
+python -m xbrl_sec.sec.cli apply-schema
+
+# 2. Reference / taxonomy tables the standardizers depend on
+python -m xbrl_sec.sec.cli sync-refs
+python -m xbrl_sec.sec.cli sync-registry
+python -m xbrl_sec.sec.cli load-taxonomy-all-years
+
+# 3. Core fundamentals -- slow, full SEC/EDINET history
+python -m xbrl_sec.sec.cli run US --download --full
+python -m xbrl_sec.sec.cli run JP --download --full
+
+# 4. Prices
+python -m xbrl_sec.sec.cli fetch-prices --skip-jp
+python -m xbrl_sec.sec.cli fetch-stock-splits --jurisdiction US
+
+# 5. International equities
+python -m xbrl_sec.sec.cli run-yahoo-global
+
+# 6. Everything else, as needed: mda, inst, insider, news, fetch-fred,
+#    fetch-fama-french, compute-factor-model, cycle, etf.cli run
+\end{lstlisting}
+
+\begin{notebox}[\code{--full} is slow]
+A \code{--full} US/JP run downloads and parses the entire filing history and can take
+hours. Day-to-day refreshes should drop \code{--full} and use plain
+\code{run <jurisdiction> --download} instead --- it's incremental, driven by each
+source's watermark (\code{XBRL\_SEC\_US\_LOOKBACK\_DAYS} and similar settings in
+\code{backend/xbrl\_sec/sec/settings.py}).
+\end{notebox}
+
+%======================================================================
+\section{Step 9 --- verify it worked, then run the app}
+
+\begin{lstlisting}[language=bash]
+# Coverage / row-count sanity checks
+python -m xbrl_sec.sec.cli health-yahoo-global
+python -m xbrl_sec.etf.cli status
+
+# Token-free smoke test of the committee engine against the warehouse you just built
+$env:PYTHONPATH = "$PWD\backend"
+.\.venv\Scripts\python -m ai_analyst.committee.run --ticker MSFT --offline --no-news
+
+# Start the app
+.\start_committee.bat        # opens http://127.0.0.1:3027
+\end{lstlisting}
+
+If \code{start\_committee.bat} shows an empty Explore view or a company with no
+financials, the most common causes are (in order): \code{apply-schema} never run,
+\code{PGPASSWORD} not set in the current terminal, or the relevant jurisdiction's
+\code{run <US|JP> --download} hasn't completed yet for that ticker.
+
+%======================================================================
+\section{Reference: environment variables}
+
+\begin{center}\small
+\begin{tabular}{@{}>{\ttfamily\footnotesize\color{navy}}p{4.6cm} p{8.2cm}@{}}
+\toprule
+\normalfont\tabhead{Variable} & \normalfont\tabhead{Used by} \\
+\midrule
+PGPASSWORD & Postgres auth (libpq), both connection paths --- \code{setx}, not \code{.env}. \\
+DATABASE\_URL / DB\_SCHEMA & FastAPI backend (asyncpg). \\
+XBRL\_SEC\_DATABASE\_URL / XBRL\_SEC\_SCHEMA & Ingestion CLIs (psycopg2). \\
+EDINET\_API\_KEY & JP EDINET downloads (Section~\ref{sec:edinet}). \\
+SEC\_HTTP\_USER\_AGENT & MD\&A HTML text extraction only --- not the core SEC downloader (Section~\ref{sec:sec}). \\
+FRED\_API\_KEY & \code{fetch-fred} (macro data). \\
+OPENFIGI\_API\_KEY / OPEN\_FIGI\_API\_KEY & 13F CUSIP $\to$ ticker matching. \\
+MOODYS\_API\_KEY, SP\_API\_KEY, FITCH\_API\_KEY & ETF bond credit-quality ratings. \\
+DEEPSEEK\_API\_KEY (or OPENAI\_/ANTHROPIC\_/MOONSHOT\_/GEMINI\_API\_KEY) & MD\&A scoring, 13F LLM matching, news sentiment, the committee itself. \\
+MZQA\_NEWS\_OLLAMA\_URL & News sentiment if using the local Ollama backend (default). \\
+MZQA\_ROOT & Machine-specific scratch/cache root; override if you see \code{FileNotFoundError} on another machine's path. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{notebox}[\code{MZQA\_SKIP\_SCHEMA} is a no-op]
+\code{.env.example} sets \code{MZQA\_SKIP\_SCHEMA=1}, inherited from the parent monorepo
+this app was carved out of. Nothing in this repository reads that variable --- the
+FastAPI backend never calls \code{apply\_schema()} regardless of its value. Schema
+management is always the manual \code{apply-schema} step in Section~\ref{sec:schema}.
+\end{notebox}
+
+\end{document}
