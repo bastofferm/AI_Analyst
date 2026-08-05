@@ -1,0 +1,258 @@
+% =====================================================================
+%  mzqastyle.sty — MZQA / AI Analyst documentation house style
+%  Shared design system for the AI Analyst reference set.
+%  pdfLaTeX. A4. Serif body (Latin Modern) + sans navy headings.
+% =====================================================================
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{mzqastyle}[2026/07/31 MZQA AI Analyst house style]
+
+% ------------------------------------------------------------- geometry
+\RequirePackage[a4paper,margin=2.25cm,headheight=22pt,footskip=1.1cm]{geometry}
+
+% ------------------------------------------------------------- fonts
+\RequirePackage[T1]{fontenc}
+\RequirePackage[utf8]{inputenc}
+\RequirePackage{lmodern}
+\RequirePackage[scaled=0.90]{helvet}   % sans family for headings
+\RequirePackage{microtype}
+
+% ------------------------------------------------------------- math
+\RequirePackage{amsmath,amssymb,amsfonts}
+\RequirePackage{mathtools}
+\RequirePackage{bm}
+
+% ------------------------------------------------------------- tables / lists
+\RequirePackage{booktabs}
+\RequirePackage{array}
+\RequirePackage{tabularx}
+\RequirePackage{longtable}
+\RequirePackage{multirow}
+\RequirePackage{enumitem}
+\setlist{leftmargin=1.35em,itemsep=2pt,topsep=3pt,parsep=0pt}
+
+% ------------------------------------------------------------- graphics
+\RequirePackage{graphicx}
+\RequirePackage{float}
+\RequirePackage{tikz}
+\usetikzlibrary{shapes.geometric,arrows.meta,positioning,calc,fit,backgrounds,
+                 shadows.blur,decorations.pathreplacing}
+\RequirePackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+% ------------------------------------------------------------- misc
+\RequirePackage{parskip}
+\RequirePackage{xcolor}
+\RequirePackage[most]{tcolorbox}
+\RequirePackage{caption}
+\RequirePackage{titlesec}
+\RequirePackage{titletoc}
+\RequirePackage{fancyhdr}
+\RequirePackage{enumitem}
+\RequirePackage{listings}
+\RequirePackage{ragged2e}
+
+% ------------------------------------------------------------- palette
+\definecolor{navy}{HTML}{1F3A5F}       % primary heading navy
+\definecolor{navytwo}{HTML}{2E5C8A}    % secondary blue
+\definecolor{steel}{HTML}{47688F}      % tertiary
+\definecolor{muted}{HTML}{6B7488}      % captions / meta
+\definecolor{ink}{HTML}{1B2430}        % body text
+\definecolor{rule}{HTML}{C7D0DE}       % hairlines
+\definecolor{border}{HTML}{D9DEE8}
+\definecolor{panel}{HTML}{F4F6FA}      % light panel fill
+\definecolor{panelalt}{HTML}{EDF1F7}   % alt table row
+\definecolor{pageb}{HTML}{F7F8FB}
+\definecolor{codebg}{HTML}{F6F8FA}
+\definecolor{green}{HTML}{15803D}
+\definecolor{red}{HTML}{B91C1C}
+\definecolor{amber}{HTML}{B45309}
+\definecolor{amberfill}{HTML}{FDF3E3}
+\definecolor{tealfill}{HTML}{E7F1F1}
+
+\color{ink}
+
+% ------------------------------------------------------------- hyperref
+\RequirePackage{hyperref}
+\hypersetup{
+  colorlinks=true, linkcolor=navytwo, urlcolor=steel, citecolor=navy,
+  bookmarksnumbered=true, breaklinks=true, pdfborder={0 0 0}}
+\RequirePackage{bookmark}
+
+% ------------------------------------------------------------- headings
+\titleformat{\section}
+  {\sffamily\Large\bfseries\color{navy}}{\thesection}{0.7em}{}
+\titleformat{\subsection}
+  {\sffamily\large\bfseries\color{navytwo}}{\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}
+  {\sffamily\normalsize\bfseries\color{steel}}{\thesubsubsection}{0.5em}{}
+\titlespacing*{\section}{0pt}{18pt}{7pt}
+\titlespacing*{\subsection}{0pt}{12pt}{4pt}
+\titlespacing*{\subsubsection}{0pt}{9pt}{3pt}
+
+% section rule under \section
+\titleformat{name=\section}[hang]
+  {\sffamily\Large\bfseries\color{navy}}{\thesection}{0.7em}{}[{\color{rule}\titlerule[0.8pt]}]
+
+% ------------------------------------------------------------- header / footer
+\newcommand{\docrunningtitle}{AI Analyst}
+\newcommand{\setrunningtitle}[1]{\renewcommand{\docrunningtitle}{#1}}
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{rule}\leaders\hrule height \headrulewidth\hfill}}
+\fancyhead[L]{\sffamily\footnotesize\color{muted}\docrunningtitle}
+\fancyhead[R]{\sffamily\footnotesize\color{muted}\nouppercase{\leftmark}}
+\fancyfoot[L]{\sffamily\footnotesize\color{muted}MZQA}
+\fancyfoot[R]{\sffamily\footnotesize\color{muted}\thepage}
+\fancypagestyle{plain}{\fancyhf{}%
+  \fancyfoot[R]{\sffamily\footnotesize\color{muted}\thepage}%
+  \renewcommand{\headrulewidth}{0pt}}
+
+% ------------------------------------------------------------- captions
+\captionsetup{font=small,labelfont={sf,bf,color=navy},labelsep=period,
+  textfont={color=ink},skip=6pt}
+
+% ------------------------------------------------------------- code listings
+\lstdefinestyle{mzqa}{
+  basicstyle=\ttfamily\footnotesize\color{ink},
+  keywordstyle=\color{navy}\bfseries,
+  commentstyle=\color{muted}\itshape,
+  stringstyle=\color{green},
+  backgroundcolor=\color{codebg},
+  frame=single, rulecolor=\color{border},
+  breaklines=true, showstringspaces=false,
+  columns=fullflexible, xleftmargin=10pt, framexleftmargin=6pt,
+  aboveskip=9pt, belowskip=6pt, keepspaces=true, tabsize=2,
+  literate={μ}{{$\mu$}}1 {σ}{{$\sigma$}}1 {Σ}{{$\Sigma$}}1 {λ}{{$\lambda$}}1
+           {≤}{{$\leq$}}1 {≥}{{$\geq$}}1 {→}{{$\rightarrow$}}1 {×}{{$\times$}}1
+           {β}{{$\beta$}}1 {α}{{$\alpha$}}1 {²}{{\textsuperscript{2}}}1 {·}{{\,$\cdot$\,}}1
+}
+\lstset{style=mzqa}
+\newcommand{\code}[1]{{\ttfamily\small #1}}
+
+% ------------------------------------------------------------- tcolorbox styles
+% Model box: a titled, framed exhibit for a single model.
+\newtcolorbox{modelbox}[2][]{
+  enhanced, breakable, sharp corners=downhill, arc=2pt,
+  colback=white, colframe=navy, boxrule=0.9pt,
+  left=10pt,right=10pt,top=8pt,bottom=8pt,
+  fonttitle=\sffamily\bfseries\color{white},
+  colbacktitle=navy, coltitle=white,
+  attach boxed title to top left={xshift=8pt,yshift=-\tcboxedtitleheight/2},
+  boxed title style={sharp corners, arc=1pt, boxrule=0pt, colback=navy},
+  title={#2}, #1}
+
+% Key-result / takeaway box
+\newtcolorbox{keybox}[1][Key result]{
+  enhanced, breakable, sharp corners, boxrule=0pt,
+  colback=tealfill, colframe=tealfill,
+  borderline west={2.5pt}{0pt}{navytwo},
+  left=10pt,right=10pt,top=6pt,bottom=6pt,
+  fontupper=\small,
+  overlay unbroken and first={\node[anchor=north west,font=\sffamily\bfseries\footnotesize\color{navytwo}]
+     at ([xshift=10pt,yshift=-4pt]frame.north west){#1};},
+  before upper={\vspace{9pt}}}
+
+% Note / caveat box
+\newtcolorbox{notebox}[1][Note]{
+  enhanced, breakable, sharp corners, boxrule=0pt,
+  colback=amberfill, colframe=amberfill,
+  borderline west={2.5pt}{0pt}{amber},
+  left=10pt,right=10pt,top=6pt,bottom=6pt,
+  fontupper=\small,
+  overlay unbroken and first={\node[anchor=north west,font=\sffamily\bfseries\footnotesize\color{amber}]
+     at ([xshift=10pt,yshift=-4pt]frame.north west){#1};},
+  before upper={\vspace{9pt}}}
+
+% Definition / spec box (light panel)
+\newtcolorbox{specbox}[1][]{
+  enhanced, breakable, sharp corners, arc=1pt,
+  colback=panel, colframe=border, boxrule=0.6pt,
+  left=9pt,right=9pt,top=6pt,bottom=6pt, fontupper=\small, #1}
+
+% ------------------------------------------------------------- TikZ node styles
+\tikzset{
+  term/.style={draw=navy, fill=navy, text=white, rounded corners=7pt, align=center,
+    font=\sffamily\small\bfseries, minimum height=7mm, minimum width=16mm, inner sep=3pt},
+  proc/.style={draw=border, fill=panel, text=navy, rounded corners=2pt, align=center,
+    font=\sffamily\small, minimum height=8.5mm, minimum width=28mm, inner sep=4pt},
+  llm/.style={draw=navytwo, fill=navy!8, text=navy, rounded corners=2pt, align=center,
+    font=\sffamily\small, minimum height=8.5mm, minimum width=22mm, inner sep=4pt},
+  data/.style={draw=amber!75!black, fill=amberfill, text=ink, align=center, rounded corners=2pt,
+    font=\sffamily\footnotesize, minimum height=8mm, inner sep=4pt},
+  store/.style={draw=steel, fill=tealfill, text=navy, align=center,
+    font=\sffamily\footnotesize, minimum height=8mm, inner sep=4pt,
+    cylinder, shape border rotate=90, aspect=0.28, minimum width=24mm},
+  dec/.style={draw=navy, fill=white, text=navy, diamond, aspect=2.2, align=center,
+    font=\sffamily\footnotesize\itshape, inner sep=1pt, minimum width=18mm},
+  arr/.style={-{Stealth[length=2.2mm]}, draw=steel, semithick},
+  arrd/.style={-{Stealth[length=2.2mm]}, draw=steel, semithick, dashed},
+  lbl/.style={font=\sffamily\scriptsize\itshape, text=muted, fill=white, inner sep=1.3pt},
+  zone/.style={draw=border, rounded corners=3pt, fill=pageb, inner sep=8pt},
+  zonelbl/.style={font=\sffamily\small\bfseries, text=navy},
+}
+
+% ------------------------------------------------------------- math macros
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\Cov}{\operatorname{Cov}}
+\newcommand{\Var}{\operatorname{Var}}
+\newcommand{\Corr}{\operatorname{Corr}}
+\newcommand{\Std}{\operatorname{std}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\sgn}{\operatorname{sign}}
+\newcommand{\clip}{\operatorname{clip}}
+\newcommand{\rank}{\operatorname{rank}}
+\newcommand{\tr}{^{\mathsf{T}}}
+\newcommand{\wv}{\mathbf{w}}
+\newcommand{\xv}{\mathbf{x}}
+\newcommand{\zv}{\mathbf{z}}
+\newcommand{\muv}{\boldsymbol{\mu}}
+\newcommand{\ones}{\mathbf{1}}
+\newcommand{\IC}{\mathrm{IC}}
+\newcommand{\RankIC}{\mathrm{RankIC}}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
+
+% inline metric / code tokens
+\newcommand{\metric}[1]{{\ttfamily\small #1}}
+\newcommand{\tabhead}[1]{{\sffamily\bfseries\color{navy}#1}}
+
+% ------------------------------------------------------------- title page helper
+\newcommand{\mzqatitlepage}[5]{%
+  % #1 kicker  #2 title  #3 subtitle  #4 abstract  #5 date/meta
+  \begin{titlepage}
+  \thispagestyle{empty}
+  \raggedright
+  \vspace*{1.4cm}
+  {\sffamily\bfseries\Large\color{muted}MZQA}\\[2pt]
+  {\sffamily\footnotesize\color{muted}\MakeUppercase{#1}}\par
+  \vspace{1.1cm}
+  {\color{navy}\rule{\textwidth}{1.4pt}}\\[10pt]
+  {\sffamily\bfseries\fontsize{30}{34}\selectfont\color{navy} #2}\\[10pt]
+  {\sffamily\Large\color{navytwo} #3}\par
+  \vspace{6pt}
+  {\color{navy}\rule{\textwidth}{1.4pt}}\\[1.5cm]
+  \begin{minipage}{0.92\textwidth}
+    \setlength{\parindent}{0pt}\color{ink}\normalsize #4
+  \end{minipage}\par
+  \vfill
+  {\sffamily\footnotesize\color{muted} #5}\par
+  \vspace{0.6cm}
+  \end{titlepage}}
+
+% pretty TOC — styled entries via titletoc, navy links
+\contentsmargin{2.2em}
+\titlecontents{section}[0pt]
+  {\addvspace{4pt}\sffamily\bfseries\color{navy}}
+  {\contentslabel{1.6em}}{\hspace*{-1.6em}}
+  {\hfill\color{muted}\normalfont\thecontentspage}[\vspace{1pt}]
+\titlecontents{subsection}[2.2em]
+  {\sffamily\color{ink}}
+  {\contentslabel{2.2em}}{}
+  {\titlerule*[0.5pc]{\color{rule}.}\color{muted}\thecontentspage}
+\newcommand{\mzqatoc}{{\hypersetup{linkcolor=navy}\tableofcontents}}
+
+\endinput
