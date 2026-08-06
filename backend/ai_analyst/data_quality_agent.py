@@ -295,8 +295,10 @@ def _raw_layer(
         {
             "source_filings": len(filing_rows),
             "parsed_filings": len(parsed_rows),
-            "filing_years": sorted({int(row["fiscal_year"]) for row in filing_rows if row.get("fiscal_year")}, reverse=True),
-            "parsed_years": sorted({int(row["fiscal_year"]) for row in parsed_rows if row.get("fiscal_year")}, reverse=True),
+            # _int (not the plain `int()`): a NULL period_end comes back as NaN via read_sql,
+            # and NaN is truthy — so `if row.get("fiscal_year")` let it through into int(NaN).
+            "filing_years": sorted({y for row in filing_rows if (y := _int(row.get("fiscal_year"))) is not None}, reverse=True),
+            "parsed_years": sorted({y for row in parsed_rows if (y := _int(row.get("fiscal_year"))) is not None}, reverse=True),
             "latest_period_end": str(filing_rows[0].get("period_end"))[:10] if filing_rows else None,
         }
     )
