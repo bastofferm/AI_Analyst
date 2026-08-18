@@ -327,6 +327,15 @@ Quantitative Factor Analyst specialist. The mathematics of each model is specifi
 in the \emph{Quantitative \& ML Models} volume; its engineering integration in the
 \emph{qlib Integration} volume.
 
+
+Training the alpha model is itself agentic. Rather than one fit on one fixed
+parametrization, a second LangGraph workflow --- a quantitative researcher, a model
+validation unit, a portfolio manager and an external advisor --- iterates over the
+training specification, emitting a model validation report each round and promoting
+the champion only if it beats the model in production on a purged, out-of-sample
+basis. Runs are background jobs with a polled Postgres ledger, and each produces a
+downloadable validation dossier. The loop is documented in the \emph{qlib
+Integration} volume; its estimators in the \emph{Quantitative \& ML Models} volume.
 %======================================================================
 \section{REST API}
 

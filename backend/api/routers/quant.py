@@ -404,3 +404,118 @@ def _run_retrain(req: RetrainRequest) -> dict[str, Any]:
         "error": rec.get("error"),
         "model": alpha_signal.model_meta(req.jurisdiction, req.label),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Agentic research (the iterative replacement for one-shot retraining)
+# --------------------------------------------------------------------------- #
+# A research run is several fits plus a dozen LLM calls — far past any request timeout — so
+# unlike /retrain it is a background job with a polled ledger. /retrain stays for the batch
+# CLI and as a fast deterministic fallback.
+class ResearchStartRequest(BaseModel):
+    jurisdiction: str = "US"
+    label: str = "forward_1m"
+    max_iterations: int = Field(default=4, ge=1, le=12)
+    # LLM credentials for the researcher / validation / PM agents. Supplied by the browser
+    # vault via withSessionLlm, else resolved from the server environment.
+    provider: str | None = None
+    model: str | None = None
+    api_key: str | None = None
+    # The external advisor deliberately runs on a DIFFERENT provider when one is available,
+    # so the outside view carries genuinely different priors.
+    advisor_provider: str | None = None
+    advisor_model: str | None = None
+    advisor_api_key: str | None = None
+    # Optional starting-spec overrides; validated and clamped by spec.apply_patch.
+    spec_overrides: dict[str, Any] | None = None
+    offline: bool = False       # run the deterministic ladder, spending no tokens
+
+
+@router.post("/research/start")
+async def research_start(req: ResearchStartRequest) -> dict[str, Any]:
+    """Register a research run and return its id immediately."""
+    from ..quant.research import runner
+
+    if req.label not in qlib_data.LABEL_HORIZONS:
+        raise HTTPException(422, f"unknown horizon {req.label!r}; "
+                                 f"choose one of {list(qlib_data.LABEL_HORIZONS)}")
+    if req.jurisdiction.upper() not in ("US", "JP"):
+        raise HTTPException(422, "research runs are available for the US and JP models")
+
+    config: dict[str, Any] = {"offline": bool(req.offline)}
+    if req.spec_overrides:
+        config["spec_overrides"] = req.spec_overrides
+
+    result = await asyncio.to_thread(
+        runner.start_run,
+        jurisdiction=req.jurisdiction.upper(), label=req.label,
+        max_iterations=req.max_iterations, provider=req.provider, api_key=req.api_key,
+        model=req.model, advisor_provider=req.advisor_provider,
+        advisor_api_key=req.advisor_api_key, advisor_model=req.advisor_model,
+        config=config,
+    )
+    if not result.get("ok"):
+        raise HTTPException(409, result.get("error", "could not start the research run"))
+    return result
+
+
+@router.get("/research/latest")
+async def research_latest(jurisdiction: str = "US", label: str = "forward_1m") -> dict[str, Any]:
+    """Most recent run for a market/horizon, so the panel opens populated."""
+    from ..quant.research import runner
+
+    run = await asyncio.to_thread(runner.latest_run, jurisdiction, label)
+    return run or {"available": False,
+                   "note": f"no research run yet for {jurisdiction} {label}"}
+
+
+@router.get("/research/runs")
+async def research_runs(jurisdiction: str | None = None, label: str | None = None,
+                        limit: int = 20) -> dict[str, Any]:
+    """Run history, newest first."""
+    from ..quant.research import runner
+
+    rows = await asyncio.to_thread(runner.list_runs, jurisdiction, label, min(limit, 100))
+    return {"runs": rows}
+
+
+@router.get("/research/{run_id}")
+async def research_get(run_id: str) -> dict[str, Any]:
+    """Run header plus every persisted round — the endpoint the UI polls."""
+    from ..quant.research import runner
+
+    run = await asyncio.to_thread(runner.get_run, run_id)
+    if run is None:
+        raise HTTPException(404, f"no research run {run_id!r}")
+    return run
+
+
+@router.post("/research/{run_id}/cancel")
+async def research_cancel(run_id: str) -> dict[str, Any]:
+    """Cooperative cancel; the run stops after the round in flight completes."""
+    from ..quant.research import runner
+
+    result = await asyncio.to_thread(runner.cancel_run, run_id)
+    if not result.get("ok"):
+        raise HTTPException(404, result.get("error", "no active run with that id"))
+    return result
+
+
+@router.get("/research/{run_id}/report.pdf")
+async def research_report_pdf(run_id: str):
+    """Render the run's validation dossier and return it as a PDF."""
+    from fastapi.responses import FileResponse
+
+    from ..quant.research import report_pdf, runner
+
+    run = await asyncio.to_thread(runner.get_run, run_id)
+    if run is None:
+        raise HTTPException(404, f"no research run {run_id!r}")
+    result = await _in_thread(report_pdf.write_report, run)
+    path = result.get("pdf") or result.get("html")
+    if not path:
+        raise HTTPException(500, "could not render the report")
+    media = "application/pdf" if result.get("pdf_ok") else "text/html"
+    suffix = "pdf" if result.get("pdf_ok") else "html"
+    return FileResponse(path, media_type=media,
+                        filename=f"alpha_research_{run_id[:8]}.{suffix}")

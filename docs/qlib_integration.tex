@@ -41,6 +41,11 @@ valuation engine and the fundamentals warehouse:
         factor-IC weights blended into the value $+$ sentiment interest score.
   \item \textbf{Committee integration} --- a \code{quant\_signals} evidence node and
         a Quantitative Factor Analyst specialist.
+  \item \textbf{Agentic model research} --- a LangGraph loop in which a quantitative
+        researcher, a model validation unit, a portfolio manager and an external
+        advisor iterate over the training specification, producing a validation
+        report per round and gating promotion on out-of-sample improvement
+        (\S\ref{sec:research}).
   \item \textbf{REST $+$ UI} --- a \code{/api/quant/*} router and a \emph{Quant} tab.
 \end{itemize}
 
@@ -87,7 +92,8 @@ qlib\_backtest.py & Walk-forward out-of-sample signal backtest scored with qlib 
 alpha\_signal.py  & Central bridge: cached latest cross-section $+$ per-ticker expected returns (used by scanner, committee, router). \\
 ic\_weights.py    & Regime-conditioned factor-IC $\to$ per-family scoring weights. \\
 optimize.py / risk.py & Native SLSQP/MIP optimizer; sample / Ledoit--Wolf / FF structured covariance. \\
-routers/quant.py  & \code{/api/quant/\{backends,alpha,risk,optimize,backtest\}}. \\
+research/         & Agentic research package: the LangGraph loop, the quality-attribute battery, the robustness rating, the ledger, and the dossier (\S\ref{sec:research}). \\
+routers/quant.py  & \code{/api/quant/\{backends,alpha,risk,optimize,backtest,retrain,research/*\}}. \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -206,6 +212,239 @@ The committee receives macro regime context from the macro node and the
         alpha-vs-valuation disagreements.
 \end{itemize}
 
+%======================================================================
+\section{Agentic alpha research (LangGraph)}
+\label{sec:research}
+
+\emph{Code:} \code{api/quant/research/}. The one-shot trainer fits one model on one
+fixed parametrization and promotes whatever comes out. This package replaces that
+with a critiqued search: four agents iterate over the training specification, each
+round emits a full model validation report, and promotion is gated on beating the
+incumbent out-of-sample.
+
+\begin{keybox}[Why a loop, and why critics]
+A single fit has no mechanism for noticing that its own number is untrustworthy. On
+the shipped US \code{forward\_12m} model the purged walk-forward rank-IC of the
+baseline specification is \emph{negative} ($-0.013$); two preprocessing changes ---
+median imputation and label winsorization --- move it to $+0.017$. Neither change is
+exotic, and neither would be tried by a pipeline with no critique step. The critics
+exist because a search will otherwise optimize the headline: a model can improve its
+rank-IC purely by discarding a third of the universe.
+\end{keybox}
+
+\subsection{Module map}
+
+\begin{center}\small
+\begin{tabular}{@{}>{\ttfamily\footnotesize\color{navy}}l p{9.3cm}@{}}
+\toprule
+\normalfont\tabhead{File} & \normalfont\tabhead{Responsibility} \\
+\midrule
+spec.py        & \code{TrainingSpec} --- the searched parametrization --- plus \code{apply\_patch}, the whitelisting/clamping validator, and \code{describe\_search\_space} (the lecture the researcher is taught from). \\
+preprocess.py  & Sample selection, winsorization, robust/rank normalization, imputation, sector\,/\,size neutralization, purged splitting. \\
+models.py      & Six model families behind one \code{.model.predict(ndarray)} contract; the ensemble wrapper. \\
+refdata.py     & Point-in-time GICS, market cap, and Fama--French betas --- the maps the breakdowns and the rating group by. \\
+evaluate.py    & Purged walk-forward scoring and the quality-attribute battery; the shared \code{breakdown()}. \\
+perturb.py     & The perturbation battery, industry deconfounding, and the ordinal robustness rating. \\
+report.py      & The iteration report, and the allowlisted, leakage-swept packet the agents are shown. \\
+schemas.py / prompts.py & Pydantic structured outputs; the four personas written as lectures. \\
+nodes.py / graph.py & Node functions; graph assembly, \code{run\_research}, and the CLI. \\
+runner.py      & Background thread, Postgres ledger, cooperative cancellation. \\
+report\_pdf.py & The branded HTML\,/\,PDF validation dossier. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Graph topology}
+
+The graph is a \code{StateGraph} over \code{AlphaResearchState}, compiled once per
+run. \code{prepare\_data} executes once; everything from \code{train} to
+\code{quant\_researcher} is the loop body.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=4mm and 7mm, font=\sffamily\footnotesize,
+    scale=0.86, transform shape,
+    st/.style={proc, minimum width=26mm},
+    cr/.style={llm, minimum width=30mm}]
+  \node[term] (start) {START};
+  \node[st, below=of start] (prep) {prepare\_data};
+  \node[dec, below=5mm of prep] (g0) {panel?};
+  \node[term, right=16mm of g0, fill=muted, draw=muted] (end0) {END};
+  \node[st, below=7mm of g0] (train) {train};
+  \node[st, below=of train] (eval) {evaluate};
+  \node[st, below=of eval] (pert) {perturb};
+  \node[st, below=of pert] (rep) {build\_report};
+
+  \node[cr, below=11mm of rep, xshift=-38mm] (val) {model\_validation};
+  \node[cr, below=11mm of rep] (pm) {portfolio\_manager};
+  \node[cr, below=11mm of rep, xshift=38mm] (adv) {external\_advisor};
+  \begin{scope}[on background layer]
+    \node[draw=navytwo, dashed, rounded corners, fill=navy!4,
+      fit=(val)(pm)(adv), inner sep=6pt] (crit) {};
+  \end{scope}
+  \node[anchor=south west, font=\sffamily\scriptsize\itshape, text=navytwo]
+    at ([yshift=1pt]crit.north west) {critics --- one superstep, parallel};
+
+  \node[cr, below=9mm of crit.south, fill=navytwo!18, minimum width=38mm] (res)
+    {quant\_researcher};
+  \node[dec, below=6mm of res] (g1) {route};
+  \node[st, below=8mm of g1] (sel) {select\_champion};
+  \node[st, below=of sel] (prom) {promote};
+  \node[term, below=5mm of prom] (end1) {END};
+
+  \draw[arr] (start) -- (prep);
+  \draw[arr] (prep) -- (g0);
+  \draw[arr] (g0) -- node[lbl, above]{empty} (end0);
+  \draw[arr] (g0) -- node[lbl, right]{ok} (train);
+  \draw[arr] (train) -- (eval);
+  \draw[arr] (eval) -- (pert);
+  \draw[arr] (pert) -- (rep);
+  \draw[arr] (rep) -- (val); \draw[arr] (rep) -- (pm); \draw[arr] (rep) -- (adv);
+  \draw[arr] (val) -- (res); \draw[arr] (pm) -- (res); \draw[arr] (adv) -- (res);
+  \draw[arr] (res) -- (g1);
+  \draw[arr] (g1) -- node[lbl, right]{finish} (sel);
+  \draw[arr] (sel) -- (prom);
+  \draw[arr] (prom) -- (end1);
+  \draw[arr] (g1.west) -- ++(-50mm,0) node[lbl, above, pos=0.45]{continue}
+        |- (train.west);
+\end{tikzpicture}
+\caption{The research loop. The three critics fan out in one superstep and the
+researcher joins on all of them, so it synthesizes a complete set of critiques
+rather than reacting to whichever finished first.}
+\end{figure}
+
+\subsection{State and reducers}
+
+\code{AlphaResearchState} is a \code{TypedDict(total=False)} following the
+committee's convention. Exactly three channels accumulate, and they are exactly the
+channels written concurrently by the fan-out:
+
+\begin{center}\small
+\begin{tabular}{@{}>{\ttfamily\footnotesize\color{navy}}l >{\ttfamily\footnotesize}l p{6.2cm}@{}}
+\toprule
+\normalfont\tabhead{Channel} & \normalfont\tabhead{Reducer} & \normalfont\tabhead{Contents} \\
+\midrule
+iterations   & operator.add & One validation report per completed round. \\
+agent\_notes & operator.add & The four personas' output; written by three parallel nodes. \\
+candidates   & operator.add & Fitted models kept for champion selection and ensembling. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Everything else is last-write-wins, which is what a loop that overwrites its working
+specification each round requires. Heavyweight objects --- the raw panel, the fitted
+candidates --- live on the state as ordinary Python references: the graph runs in one
+process on one thread, so there is no serialization boundary, and re-deriving a
+multi-minute warehouse pull each round to satisfy a purity principle would be the
+wrong trade.
+
+\begin{notebox}[Node names may not collide with state keys]
+LangGraph rejects a graph whose node name matches a state key. The obvious names
+\code{report}, \code{validation} and \code{researcher} are all taken by channels, so
+the nodes are \code{build\_report}, \code{model\_validation} and
+\code{quant\_researcher}. The failure is a hard \code{ValueError} at
+\code{add\_node}, not a subtle one.
+\end{notebox}
+
+\subsection{Routing and termination}
+
+\code{route\_after\_prepare} ends the run immediately when the warehouse yields no
+usable panel, rather than looping over emptiness. \code{route\_iteration} has five
+independent stopping conditions, evaluated in priority order --- cancellation; the
+iteration budget; a portfolio-manager \code{accept}/\code{reject}; the researcher
+declaring convergence or proposing nothing the validator accepted; and the guarded
+metric failing to improve for \code{patience} rounds. Each is recorded in
+\code{stop\_reason}, so the report states why the run ended instead of leaving the
+reader to infer it from the round count. The recursion budget is
+$12\times\text{\code{max\_iterations}}+20$, giving the eight-node body headroom.
+
+\subsection{The agents}
+
+Three of the four run on the desk provider (DeepSeek by default, any registry
+provider by request). The External Advisor runs on a \emph{different} provider when
+the caller supplies a second key, so the outside view carries genuinely different
+priors; it falls back to the desk provider otherwise.
+
+\begin{center}\small
+\begin{tabular}{@{}>{\bfseries\color{navy}}l p{5.4cm} p{3.6cm}@{}}
+\toprule
+\tabhead{Agent} & \tabhead{Returns} & \tabhead{Power} \\
+\midrule
+Quantitative Researcher & \code{SpecPatch} --- changed fields, rationale, a falsifiable hypothesis & Proposes the next specification \\
+Model Validation      & \code{ValidationVerdict} --- \code{pass\,|\,warn\,|\,fail} plus structured findings & A \code{fail} \emph{vetoes} promotion of that round \\
+Portfolio Manager     & \code{PMVerdict} --- \code{accept\,|\,reject\,|\,continue} & Ends the loop; final promotion gate \\
+External Advisor      & \code{AdvisorNote} --- contrarian read $+$ one orthogonal direction & Advisory only \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Structured output uses the committee's plumbing (\code{make\_chat\_model(\dots)}
+\code{.with\_structured\_output}) with retry-on-malformed. Enum-like fields are typed
+\code{str}, not \code{Literal}, and normalized in code --- the committee's convention,
+adopted for the same reason: a model answering ``PASS'' should not lose an entire
+analysis to whole-response validation.
+
+\begin{notebox}[The deterministic path is not a stub]
+\code{MZQA\_COMMITTEE\_DISABLE\_LLM=1}, \code{config["offline"]}, or simply no key
+puts the loop on a fully deterministic path: the researcher walks a pre-registered
+ladder of changes motivated by the incumbent pipeline's known defects, and the three
+critics apply rule-based versions of their checklists. It is a usable no-token grid
+search, and it is what the test suite exercises.
+\end{notebox}
+
+\subsection{Two hard boundaries}
+
+\textbf{The LLM never runs code.} Following FlowMind, each agent's system prompt is a
+\emph{lecture} over the \code{TrainingSpec} schema, generated from
+\code{describe\_search\_space()} so it cannot drift from the validator. The
+researcher returns a patch; \code{apply\_patch} whitelists every key, range-clamps
+every value, drops hyperparameters foreign to the selected model family, and reports
+what it rejected back into the next round's packet. A hallucinated field, or a
+\code{learning\_rate} of $500$, cannot reach a fit.
+
+\textbf{The LLM never sees instrument identity.} Agent packets are built by an
+explicit allowlist and then swept: aggregate metrics and bucket statistics only, no
+per-name returns, no ranked name lists. The guard matches against the run's
+\emph{actual} universe rather than against anything ticker-shaped, and inspects
+identifier positions rather than prose --- US symbols include \code{ALL}, \code{ON},
+\code{MAX}, \code{GAP} and \code{REAL}, so a text scan fires on almost every sentence
+an agent writes. The motivation is concrete: every current model's training data
+covers the evaluation window, so a packet naming the winners of 2023 would let an
+agent steer the specification toward them for reasons unrelated to the diagnostics.
+
+\subsection{Background job and ledger}
+
+A run is several fits plus a dozen LLM calls --- past any request timeout --- so it
+cannot use the blocking shape \code{/retrain} uses. \code{runner.start\_run} registers
+the run, spawns a daemon thread, and returns a \code{run\_id} immediately; the client
+polls. Rounds are persisted by an \code{on\_iteration} hook as they complete, then
+re-persisted at the end once the critics' verdicts for each round exist. One active
+run per \code{(model\_key, label)} is enforced both in-process and in the ledger,
+because two runs training the same model would race on the artifact path at
+promotion.
+
+Tables (migration \code{136\_quant\_alpha\_research.sql}, also created idempotently by
+\code{runner.\_ensure\_tables}): \code{quant\_alpha\_research\_run} --- the header the
+UI polls, carrying status, live stage, champion, and the promotion decision --- and
+\code{quant\_alpha\_research\_iteration} --- one row per round with the specification,
+the battery, the rating, both breakdowns, and all four verdicts.
+
+\subsection{Promotion}
+
+\code{select\_champion} considers every round the Model Validation unit did not veto,
+\emph{plus} an ensemble of them, and promotes only when the champion beats the
+incumbent on the guarded metric by a margin, the Portfolio Manager accepted, and the
+robustness rating is not \emph{fragile}. Otherwise the artifact is written to a
+candidate path, the live model is untouched, and \code{promotion\_reason} records
+why. When every round is vetoed the run still names its best attempt, explicitly
+flagged as not promotable --- more useful than reporting no champion at all.
+
+\begin{notebox}[The incumbent comparison flatters the incumbent]
+The production model's recorded rank-IC comes from a single held-out block with no
+embargo; the champion's comes from a purged walk-forward. The two are not
+commensurable, and the promotion reason says so on every run.
+\end{notebox}
+
 \section{REST API and frontend}
 Router \code{api/routers/quant.py} (under \code{/api/quant}), all handlers
 offloading qlib work to worker threads:
@@ -220,6 +459,13 @@ POST /alpha     & Expected returns for a universe (or the latest top-$N$ cross-s
 POST /risk      & Forward covariance / volatility / factor exposures. \\
 POST /optimize  & Portfolio optimization; \code{optimizer} selects native or any qlib backend. \\
 POST /backtest  & Walk-forward out-of-sample signal backtest with qlib \code{risk\_analysis}. \\
+POST /retrain   & One-shot (re)train of a (market, horizon) model --- the fast deterministic path, retained for the batch CLI. \\
+POST /research/start & Start an agentic research run; returns a \code{run\_id} immediately. \\
+GET /research/\{id\} & Run header $+$ every persisted round --- the polling target. \\
+GET /research/latest & Most recent run for a market/horizon, so the panel opens populated. \\
+GET /research/runs & Run history, newest first. \\
+POST /research/\{id\}/cancel & Cooperative cancel, checked between rounds. \\
+GET /research/\{id\}/report.pdf & The rendered validation dossier. \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -243,8 +489,20 @@ optimized-weights table, and a backtest panel.
         separately. Both are pre-warmed on startup so the first user request is
         served from cache.
   \item \textbf{Retraining.} The alpha model is (re)trained via the CLI:
-        \code{python -m api.quant.qlib\_alpha train --jurisdiction US}; artifacts
+        \code{python -m api.quant.qlib\_alpha train -{}-jurisdiction US}; artifacts
         are persisted per jurisdiction and hot-reloaded on file mtime.
+  \item \textbf{Agentic research runs.} A run is a background job, not a request:
+        \code{POST /api/quant/research/start} returns a \code{run\_id} and the work
+        continues on a daemon thread, with rounds persisted to
+        \code{quant\_alpha\_research\_\{run,iteration\}} as they complete. Apply
+        migration \code{136\_quant\_alpha\_research.sql} (or let
+        \code{runner.\_ensure\_tables} create the tables on first use). Run it
+        headless with
+        \code{python -m api.quant.research.graph -{}-jurisdiction US -{}-label forward\_12m},
+        adding \code{-{}-offline} to walk the deterministic ladder without spending
+        tokens. Expect the warehouse pull to dominate the first minutes: the full US
+        panel is the expensive step, and it is loaded once per run and reused by
+        every round.
   \item \textbf{Tests.} \code{backend/api/quant/tests/test\_quant.py} covers the
         optimizer backends, the structured covariance, the exact scoring fallback,
         the alpha blend, the IC re-split, and a DB-gated panel/train smoke test.

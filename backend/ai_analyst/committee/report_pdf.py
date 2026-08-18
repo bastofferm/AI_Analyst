@@ -41,20 +41,17 @@ def report_dir_for(ticker: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", (ticker or "UNKNOWN").upper())
     return output_root() / datetime.now().strftime("%Y%m%d") / safe
 
-# --- MZQA design tokens (from frontend/src/app/globals.css) ---
+# --- MZQA design tokens ---
+# Shared with the quant research dossier via ai_analyst.report_style, so both documents
+# render in one house style. Re-exported here because this module's templates reference the
+# bare names throughout.
 # Tribunal palette is deliberately MUTED (institutional, not alarm): Auditor/Base =
 # navy (objectivity), Advocate = deep gedecktes green, Challenger = burgundy/brick.
-BG = "#F5F4F0"; PANEL = "#FBFAF7"; NAVY = "#2F4D73"; NAVY2 = "#476D99"; NAVY3 = "#6B86A8"
-MUTED = "#6F7890"; BORDER = "#DDD8CD"; BORDER_SOFT = "#EEECE5"
-GREEN = "#1F7A52"; RED = "#8C2F39"; AMBER = "#B7791F"
-ADVOCATE = GREEN; CHALLENGER = RED; BASE = NAVY  # tribunal semantic aliases
+from ..report_style import (  # noqa: E402
+    AMBER, BG, BORDER, BORDER_SOFT, GREEN, MUTED, NAVY, NAVY2, NAVY3, PANEL, RED,
+)
 
-_CHROME_CANDIDATES = [
-    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-]
+ADVOCATE = GREEN; CHALLENGER = RED; BASE = NAVY  # tribunal semantic aliases
 
 
 # --------------------------------------------------------------------------- API
@@ -1306,28 +1303,8 @@ def _inline(s: str) -> str:
 
 # --------------------------------------------------------------------------- PDF
 
-def _find_browser() -> str | None:
-    for cand in _CHROME_CANDIDATES:
-        if Path(cand).exists():
-            return cand
-    return shutil.which("chrome") or shutil.which("msedge")
-
-
-def _html_to_pdf(html_path: Path, pdf_path: Path) -> bool:
-    browser = _find_browser()
-    if not browser:
-        return False
-    url = "file:///" + str(html_path.resolve()).replace("\\", "/")
-    cmd = [
-        browser, "--headless=new", "--disable-gpu", "--no-first-run",
-        "--no-pdf-header-footer", "--virtual-time-budget=4000",
-        f"--print-to-pdf={pdf_path}", url,
-    ]
-    try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
-    except Exception:
-        return False
-    return pdf_path.exists()
+from ..report_style import find_browser as _find_browser  # noqa: E402
+from ..report_style import html_to_pdf as _html_to_pdf  # noqa: E402
 
 
 # --------------------------------------------------------------------------- CSS

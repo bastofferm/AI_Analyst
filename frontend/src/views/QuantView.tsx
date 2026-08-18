@@ -21,6 +21,7 @@ import { PortfolioTable } from "./quant/PortfolioTable";
 import { ReturnDistribution } from "./quant/ReturnDistribution";
 import { PortfolioBacktest } from "./quant/PortfolioBacktest";
 import { AlphaSearch } from "./quant/AlphaSearch";
+import { ModelResearchPanel } from "./quant/research/ModelResearchPanel";
 
 type Status = "idle" | "running" | "done" | "error";
 
@@ -182,7 +183,10 @@ export function QuantView() {
           ". Re-optimizing…"
         );
         await runOptimize();
-        api.quantAlpha({ jurisdiction, top: 12, label: horizon }).then(setAlpha).catch(() => {});
+        // Same depth as the mount effect: the forecast-search panel filters and sorts over
+        // this slice, so refetching only 12 would silently shrink the table from 200 rows
+        // after a retrain (and make its "N of M shown" counter report against 12).
+        api.quantAlpha({ jurisdiction, top: 200, label: horizon }).then(setAlpha).catch(() => {});
       } else {
         setRetrainStatus("error");
         setRetrainMsg(res.error || "Retraining failed.");
@@ -359,6 +363,19 @@ export function QuantView() {
             benchmarked against the Fama-French market, with the book’s factor exposures traced over time.
           </div>
         )}
+      </SectionCard>
+
+      {/* ---------------------------------------------- agentic model research */}
+      <SectionCard
+        eyebrow="Model research · agentic training"
+        title="Research committee — iterative alpha training"
+        actions={
+          <span className="text-[11px] text-muted">
+            {jurisdiction} · {HORIZON_LABELS[horizon] ?? horizon}
+          </span>
+        }
+      >
+        <ModelResearchPanel jurisdiction={jurisdiction} horizon={horizon} />
       </SectionCard>
 
       {/* ---------------------------------------------- alpha forecast search */}

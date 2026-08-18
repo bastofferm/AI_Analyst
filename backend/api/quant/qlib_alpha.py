@@ -126,7 +126,17 @@ class AlphaArtifact:
 
 
 def evaluate(pred: pd.Series, label: pd.Series) -> dict[str, float]:
-    """IC / RankIC / ICIR of a prediction Series against realized labels."""
+    """IC / RankIC / ICIR of a prediction Series against realized labels.
+
+    ``icir`` / ``rank_icir`` are the bare mean/std ratio of the per-date IC series. That is
+    NOT the annualized information ratio the name usually denotes — the conventional figure
+    scales by sqrt(periods per year), so on a monthly panel it is ~3.46x larger. Both are
+    returned: the unscaled keys keep their existing meaning for every current caller (the
+    UI's "Consistency" tile reads ``rank_icir``), and the ``*_annualized`` keys are the ones
+    to quote when comparing against published information ratios.
+    """
+    import math
+
     from qlib.contrib.eva.alpha import calc_ic
 
     ic, ric = calc_ic(pred, label)
@@ -139,6 +149,9 @@ def evaluate(pred: pd.Series, label: pd.Series) -> dict[str, float]:
     }
     out["icir"] = float(out["ic_mean"] / out["ic_std"]) if out["ic_std"] else 0.0
     out["rank_icir"] = float(out["rank_ic_mean"] / out["rank_ic_std"]) if out["rank_ic_std"] else 0.0
+    ann = math.sqrt(12.0)   # the panel is monthly
+    out["icir_annualized"] = out["icir"] * ann
+    out["rank_icir_annualized"] = out["rank_icir"] * ann
     return out
 
 

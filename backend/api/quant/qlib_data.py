@@ -130,12 +130,19 @@ def build_panel(
     min_names_per_date: int = 30,
     normalize: bool = True,
     require_label: bool = True,
+    fillna: float | None = 0.0,
 ) -> pd.DataFrame:
     """Return a qlib feature/label panel for ``jurisdiction`` over ``[start, end]``.
 
     Rows: MultiIndex ``(datetime, instrument)`` (month-end timestamp, ticker), sorted.
     Cols: MultiIndex ``("feature", metric_id...)`` + ``("label", "y")``.
     Empty ``DataFrame`` if the warehouse has no usable rows in range.
+
+    ``fillna=None`` leaves missing features as NaN instead of substituting a value. The
+    research loop (:mod:`api.quant.research.preprocess`) needs that: per-feature coverage
+    filtering and median imputation are both impossible once missingness has been erased,
+    and filling with 0.0 *after* z-scoring silently imputes the cross-sectional mean —
+    the choice Kang et al. (2025) argue against in favour of the median.
     """
     if label not in LABEL_HORIZONS:
         raise ValueError(f"label must be one of {LABEL_HORIZONS}, got {label!r}")
@@ -208,7 +215,8 @@ def build_panel(
     X = df[feat_cols]
     if normalize:
         X = _cross_sectional_zscore(X)
-    X = X.fillna(0.0)  # missing / neutralized feature -> cross-sectional mean (0)
+    if fillna is not None:
+        X = X.fillna(fillna)  # missing / neutralized feature -> cross-sectional mean (0)
 
     groups: dict[str, pd.DataFrame] = {FEATURE: X}
     if require_label:
@@ -223,10 +231,18 @@ def time_segments(
     *,
     valid_frac: float = 0.15,
     test_frac: float = 0.15,
+    embargo_months: int = 0,
 ) -> dict[str, tuple[pd.Timestamp, pd.Timestamp]]:
-    """Contiguous chronological train/valid/test split by unique dates.
+    """Contiguous chronological train/valid/test split by unique dates, optionally purged.
 
     Returns a ``segments`` dict for ``qlib.data.dataset.DatasetH`` (inclusive ranges).
+
+    ``embargo_months`` drops that many months from the END of train and of valid so the
+    label horizon cannot straddle a boundary. Without it the split leaks: a ``forward_12m``
+    label observed at the last training month is not realized until 12 months later, i.e.
+    deep inside the validation block, so the model is scored partly on returns it was fit
+    on. Pass the label's horizon (``HORIZON_MONTHS[label]``) to close that exactly; the
+    default of 0 preserves the historical behaviour for existing callers.
     """
     dates = panel.index.get_level_values("datetime").unique().sort_values()
     n = len(dates)
@@ -238,6 +254,12 @@ def time_segments(
     if n_train < 1:
         raise ValueError("valid_frac + test_frac too large for this panel")
     tr, va, te = dates[:n_train], dates[n_train : n_train + n_valid], dates[n_train + n_valid :]
+
+    gap = max(0, int(embargo_months))
+    if gap:
+        # Purge from the end of each earlier block; never purge a block out of existence.
+        tr = tr[:-gap] if len(tr) > gap else tr[:1]
+        va = va[:-gap] if len(va) > gap else va[:1]
     return {
         "train": (tr[0], tr[-1]),
         "valid": (va[0], va[-1]),

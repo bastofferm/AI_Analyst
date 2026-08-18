@@ -890,6 +890,111 @@ export type QuantRetrainResponse = {
   rank_ic?: number | null; coverage?: number | null; error?: string | null;
   model?: QuantAlphaModelMeta | null;
 };
+
+// ---------------------------------------------------------- agentic model research
+// The iterative replacement for one-shot retraining. A run is a background job on the
+// server; the client starts it, then polls GET /research/{run_id} until a terminal status.
+export type ResearchStatus = "queued" | "running" | "complete" | "failed" | "cancelled";
+
+export type ResearchFinding = {
+  category: string; severity: string; detail: string; evidence?: string;
+};
+export type ResearchValidation = {
+  status?: "pass" | "warn" | "fail"; summary?: string;
+  findings?: ResearchFinding[]; blocking?: boolean; source?: string;
+};
+export type ResearchPM = {
+  decision?: "accept" | "reject" | "continue"; reasoning?: string;
+  preferred_iteration?: number | null; concerns?: string[]; source?: string;
+};
+export type ResearchAdvisor = {
+  contrarian_read?: string; orthogonal_direction?: string; reasoning?: string;
+  source?: string; provider?: string | null;
+};
+export type ResearchProposal = {
+  patch?: Record<string, unknown>; rationale?: string; hypothesis?: string;
+  applied_changes?: string[]; rejected?: string[]; stop?: boolean; source?: string;
+};
+export type ResearchPerturbation = {
+  id: string; label: string; stands_for: string; available?: boolean;
+  rank_ic_degradation?: number | null; confounding_share_pct?: number | null;
+};
+export type ResearchRating = {
+  available?: boolean; rating?: number; rating_label?: string; scale?: string;
+  worst_case?: { id?: string; label?: string; rank_ic_degradation?: number | null };
+  mean_degradation?: number | null; deconfounding?: string; confounder?: string | null;
+  perturbations?: ResearchPerturbation[]; reason?: string;
+};
+export type ResearchBucket = {
+  cut: string; bucket: string; n_names: number; n_months: number;
+  rank_ic: number | null; rank_icir: number | null; rank_ic_t_stat: number | null;
+  r2_oos: number | null; top_decile_spread: number | null; coverage: number | null;
+  thin: boolean;
+};
+export type ResearchBreakdowns = {
+  available?: boolean; cuts?: Record<string, ResearchBucket[]>;
+};
+export type ResearchHeadline = {
+  robustness_rating?: number | null; robustness_label?: string | null;
+  rank_ic?: number | null; rank_ic_ci95?: (number | null)[];
+  rank_icir_annualized?: number | null; r2_oos?: number | null;
+  long_short_sharpe?: number | null; turnover?: number | null; n_months?: number | null;
+};
+/** The full per-round validation report — the object both the drawer and the PDF render. */
+export type ResearchReport = {
+  iteration: number; market: string; horizon: string; horizon_months?: number;
+  spec?: Record<string, unknown>; spec_hash?: string;
+  spec_changes?: string[]; spec_rejected?: string[];
+  headline?: ResearchHeadline;
+  sections?: Record<string, Record<string, unknown>>;
+  elapsed_seconds?: number | null;
+};
+export type ResearchIteration = {
+  iteration: number; spec_hash?: string | null;
+  patch_json?: { changes?: string[]; rejected?: string[] };
+  /** The battery and the sub-population tables, also reachable via report_json.sections. */
+  metrics_json?: Record<string, Record<string, unknown>>;
+  breakdown_json?: ResearchBreakdowns;
+  rating_json?: ResearchRating;
+  validation_json?: ResearchValidation;
+  pm_json?: ResearchPM;
+  advisor_json?: ResearchAdvisor;
+  researcher_json?: ResearchProposal;
+  report_json?: ResearchReport;
+  elapsed_seconds?: number | null;
+};
+export type ResearchRun = {
+  run_id: string; model_key: string; jurisdiction: string; label: string;
+  status: ResearchStatus; provider?: string | null; advisor_provider?: string | null;
+  max_iterations: number; iterations_done: number; current_stage?: string | null;
+  baseline_json?: Record<string, unknown>;
+  champion_iteration?: number | null; champion_kind?: string | null;
+  champion_score?: number | null;
+  promoted: boolean; promotion_reason?: string | null; stop_reason?: string | null;
+  started_at?: string | null; completed_at?: string | null;
+  elapsed_seconds?: number | null; error?: string | null;
+  summary_json?: Record<string, unknown>;
+  iterations?: ResearchIteration[];
+  /** Present only on the "no run yet" placeholder from /research/latest. */
+  available?: false; note?: string;
+};
+export type ResearchStartRequest = LlmRequestFields & {
+  jurisdiction?: Jurisdiction; label?: string; max_iterations?: number;
+  advisor_provider?: string | null; advisor_model?: string | null;
+  advisor_api_key?: string | null;
+  spec_overrides?: Record<string, unknown>; offline?: boolean;
+};
+export type ResearchStartResponse = {
+  ok: boolean; run_id: string; status?: string; model_key?: string; label?: string;
+  error?: string;
+};
+export type ResearchRunSummary = {
+  run_id: string; model_key: string; label: string; status: ResearchStatus;
+  iterations_done: number; max_iterations: number;
+  champion_iteration?: number | null; champion_kind?: string | null;
+  champion_score?: number | null; promoted: boolean; stop_reason?: string | null;
+  started_at?: string | null; completed_at?: string | null; elapsed_seconds?: number | null;
+};
 export type QuantPerformance = {
   annualized_return: number; annualized_vol: number; sharpe: number | null;
   sortino: number | null; max_drawdown: number; hit_rate: number; cumulative_return: number;
@@ -1050,4 +1155,28 @@ export const api = {
     fetchJSON<QuantRetrainResponse>(`/api/quant/retrain`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     }),
+
+  // --- agentic model research -------------------------------------------------------
+  // Returns a run_id immediately; the work continues server-side. This is the first quant
+  // endpoint that needs LLM credentials, hence withSessionLlm.
+  quantResearchStart: (body: ResearchStartRequest) =>
+    fetchJSON<ResearchStartResponse>(`/api/quant/research/start`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(withSessionLlm(body)),
+    }),
+  /** Poll target while a run is in flight. */
+  quantResearchGet: (runId: string) =>
+    fetchJSON<ResearchRun>(`/api/quant/research/${encodeURIComponent(runId)}`),
+  /** Most recent run for a market/horizon, so the panel opens populated after a reload. */
+  quantResearchLatest: (jurisdiction: Jurisdiction, label: string) =>
+    fetchJSON<ResearchRun>(`/api/quant/research/latest${qs({ jurisdiction, label })}`),
+  quantResearchRuns: (jurisdiction?: Jurisdiction, label?: string, limit = 20) =>
+    fetchJSON<{ runs: ResearchRunSummary[] }>(
+      `/api/quant/research/runs${qs({ jurisdiction, label, limit })}`),
+  quantResearchCancel: (runId: string) =>
+    fetchJSON<{ ok: boolean; run_id: string; note?: string }>(
+      `/api/quant/research/${encodeURIComponent(runId)}/cancel`, { method: "POST" }),
+  /** Direct link — the browser fetches the PDF itself, so no fetch wrapper. */
+  quantResearchReportUrl: (runId: string) =>
+    `${API_BASE}/api/quant/research/${encodeURIComponent(runId)}/report.pdf`,
 };

@@ -76,6 +76,7 @@ share this one loader, so the research signal and the production forecast see an
 identical, lookahead-safe history.
 
 \subsection{Feature families and cross-sectional standardization}
+\label{sec:standardize}
 Features are importance-ranked standardized fundamentals
 (\code{fact\_metrics\_\{us,jp\}}, keeping \code{importance}\,$\le 2$) drawn from
 four families:
@@ -197,6 +198,14 @@ For the live cross-section the model builds a \emph{features-only} panel
 the current month has no realized forward return, so a label join would drop
 exactly the cross-section we want to score.
 
+The split is contiguous by default, which leaks whenever the label horizon exceeds one
+month: an $h$-month label observed at the last training month is not realized until
+$h$ months later, i.e.\ inside the validation block. \code{time\_segments} therefore
+accepts an \code{embargo\_months} gap that purges that many months from the end of each
+earlier segment; the research loop of \S\ref{sec:research} sets it to the label horizon
+by default. Figures computed without it are optimistic and are not comparable with the
+purged walk-forward of \S\ref{sec:purged}.
+
 \subsection{Evaluation: the information coefficient}
 Predictive power is measured per month by the cross-sectional correlation between
 prediction and realized return:
@@ -211,6 +220,11 @@ signal with $\overline{\RankIC}\approx 0.05\text{--}0.10$ is usable. The
 $\overline{\RankIC}\approx 0.08\text{--}0.14$; the \emph{out-of-sample}
 walk-forward figure (\S\ref{sec:bt}) is materially lower and is the number used
 for any performance claim.
+
+Note that $\mathrm{ICIR}$ as defined above is a bare mean/standard-deviation ratio, not
+the annualized information ratio the name usually denotes; the comparable monthly-panel
+figure carries a $\sqrt{12}$ scaling (\S\ref{sec:battery}). Both are reported by
+\code{evaluate()}.
 
 \section{Factor-structured risk models (forward covariance)}
 \label{sec:risk}
@@ -456,6 +470,218 @@ quoted from this path.
 %======================================================================
 \part*{Part III\quad Factor and macro-regime models}
 \addcontentsline{toc}{section}{Part III\quad Factor and macro-regime models}
+
+%======================================================================
+\section{Agentic model research}
+\label{sec:research}
+
+\emph{Code:} \code{api/quant/research/}. The estimators in this section replace the
+single fixed specification of \S\ref{sec:alpha} with a searched one. The search is
+driven by four LLM agents (their orchestration is documented in the \emph{qlib
+Integration} volume); what follows is the \emph{statistics} they steer.
+
+\subsection{The searched specification}
+A \code{TrainingSpec} is a tuple $\theta$ collecting every choice that was previously
+hard-coded: the sample filters, the outlier treatment, the standardization estimator,
+the imputation rule, the feature block, the split geometry, the model family and its
+hyperparameters. Writing $\mathcal D$ for the raw panel, a round evaluates
+\begin{equation}
+  \theta \;\longmapsto\; \big(\hat g_\theta,\ \mathcal M(\theta)\big),
+  \qquad
+  \hat g_\theta = \text{fit}\big(\Pi_\theta(\mathcal D)\big),
+\end{equation}
+where $\Pi_\theta$ is the preprocessing map below and $\mathcal M$ the metric battery
+of \S\ref{sec:battery}. Agents propose a \emph{patch} to $\theta$; a deterministic
+validator whitelists every key and clamps every value before it can reach a fit, so
+the reachable set is exactly the specified product space.
+
+\subsection{Robust cross-sectional estimators}
+The incumbent standardization (\S\ref{sec:standardize}) uses the cross-sectional mean
+and standard deviation, then clips at $\pm3$. Both moments are computed \emph{from the
+sample that contains the outlier}, so a single extreme value shifts the centre and
+inflates the scale for every other name in that month; the clip then protects the
+model from the outlier but not the cross-section from its influence. Three
+alternatives are searchable.
+
+\paragraph{Winsorization by order statistics.}
+For a month with $N_t$ observations and a tail fraction $q$, let $k=\max(1,\lfloor
+qN_t\rfloor)$ and let $x_{(1)}\le\dots\le x_{(N_t)}$ be the order statistics. Each of
+the $k$ most extreme observations per tail is replaced by the next one in:
+\begin{equation}
+  \tilde x_{i,t} \;=\; \clip\big(x_{i,t},\; x_{(k+1)},\; x_{(N_t-k)}\big).
+\end{equation}
+This is deliberately \emph{not} $\clip(x,\hat Q_q,\hat Q_{1-q})$ with interpolated
+sample quantiles. An interpolated quantile is estimated from the contaminated sample,
+so on a thin cross-section the outlier drags its own bound up to meet it --- with
+$N_t=60$ and $q=0.01$ a planted value of $500$ pulled $\hat Q_{0.99}$ to $\approx206$
+and the clip did essentially nothing. The order-statistic form has no such feedback,
+and the floor $k\ge1$ keeps it meaningful when $qN_t<1$.
+
+\paragraph{Robust standardization.}
+With $\mathrm{med}_t$ the cross-sectional median and
+$\mathrm{MAD}_t=\mathrm{med}_i\,|x_{i,t}-\mathrm{med}_t|$,
+\begin{equation}
+  z_{i,t} \;=\; \clip\!\left(\frac{x_{i,t}-\mathrm{med}_t}{1.4826\,\mathrm{MAD}_t},
+  \,-c,\,c\right),
+\end{equation}
+the constant $1.4826$ making the MAD a consistent estimator of $\sigma$ under
+normality. Both the location and the scale have a $50\%$ breakdown point, against
+$0\%$ for the mean/standard-deviation pair.
+
+\paragraph{Rank transform.}
+Discarding magnitude entirely and keeping only the ordering the model is scored on:
+\begin{equation}
+  z_{i,t} \;=\; 2\left(\frac{\rank_i(x_{i,t})}{N_t}-\tfrac12\right)\in[-1,1].
+\end{equation}
+
+\paragraph{Imputation and neutralization.}
+A missing feature may be filled at the cross-sectional \emph{median} rather than the
+mean (the incumbent's $z=0$), or the row dropped. Features may additionally be
+residualized within each month against sector dummies and $\log$ size,
+\begin{equation}
+  \tilde{\mathbf z}_t \;=\; \mathbf z_t - Z_t\big(Z_t\tr Z_t\big)^{-1}Z_t\tr\mathbf z_t ,
+\end{equation}
+one least-squares solve per month for the whole feature block, which asks whether a
+factor says anything beyond which industry a company is in.
+
+\subsection{Purged walk-forward evaluation}
+\label{sec:purged}
+The incumbent split is contiguous with no gap, so with an $h$-month label the last $h$
+training months share realized future returns with the validation block. Let $E$ be
+the embargo, defaulting to $E=h$. Training at prediction month $t_i$ is restricted to
+\begin{equation}
+  \mathcal T_{t_i} \;=\; \{\,t_j \;:\; t_j \le t_i - E\,\},
+\end{equation}
+so a model predicting month $t$ has seen only labels already realized by $t-E$ --- the
+constraint a live deployment actually operates under. The same gap purges the
+train/validation seam of the inner split used for early stopping.
+
+\begin{notebox}[The embargo is not cosmetic]
+On the shipped US \code{forward\_12m} model the purged walk-forward rank-IC of the
+incumbent specification is \emph{negative}. Figures quoted from the unpurged
+single-block split are not comparable with it and are optimistic by construction.
+\end{notebox}
+
+\subsection{The metric battery}
+\label{sec:battery}
+Organized by quality attribute rather than by convenience, after Lewis et al.'s
+observation that ML evaluation overwhelmingly reports predictive accuracy and little
+else, and that testing across attributes surfaces a wider class of defects.
+
+\paragraph{Out-of-sample $R^2$.}
+Both conventions are reported, because they diverge and quoting one without saying
+which is how implausible figures arise:
+\begin{equation}
+  R^2_{\text{oos},0} = 1-\frac{\sum (y-\hat y)^2}{\sum y^2},
+  \qquad
+  R^2_{\text{oos},\mu} = 1-\frac{\sum (y-\hat y)^2}{\sum (y-\bar y)^2}.
+\end{equation}
+The zero-benchmarked form is the return-prediction standard: the historical mean is
+itself a fitted quantity, and benchmarking against it flatters the model.
+
+\paragraph{Scaled information ratio.}
+$\mathrm{ICIR}=\overline{\IC}/\Std(\IC)$ is a bare ratio, not the annualized
+information ratio the name suggests. On a monthly panel the comparable figure is
+\begin{equation}
+  \mathrm{ICIR}^{\text{ann}} \;=\; \frac{\overline{\IC}}{\Std(\IC)}\sqrt{12},
+\end{equation}
+roughly $3.46\times$ larger. Both are reported; the unscaled key retains its meaning
+for existing consumers.
+
+\paragraph{Uncertainty.}
+A percentile bootstrap over the per-month $\RankIC_t$ series gives a $95\%$ interval
+for $\overline{\RankIC}$. An interval spanning zero is treated as \emph{no
+demonstrated skill} regardless of the point estimate, and blocks promotion.
+
+\paragraph{Ranking quality.}
+Beyond the top-minus-bottom decile spread and its $t$-statistic, the \emph{monotonicity}
+$\rho_{\text{Spearman}}(d,\bar r_d)$ between decile index $d$ and its mean realized
+return distinguishes a genuine cross-sectional ordering from a tail effect in a
+handful of names --- a large spread with low monotonicity is the latter.
+
+\paragraph{Implementability and hygiene.}
+Turnover is the fraction of the top-$k$ book replaced each month. The FF5$+$momentum
+regression of the long/short series separates alpha from factor exposure; a small
+$t_\alpha$ beside a large $R^2$ means the strategy is a factor tilt. The
+\emph{factor-neutral} rank-IC re-scores the signal after residualizing it
+cross-sectionally on the names' Fama--French betas.
+
+\paragraph{Stability.}
+The train-minus-OOS IC gap is the overfitting tell. Feature-attribution rankings are
+themselves checked for stability across refits (top-$k$ Jaccard and rank correlation)
+before any conclusion is drawn from them, and the dispersion of the selected model
+complexity across windows is reported: hyperparameters that swing between windows
+indicate a low signal-to-noise ratio rather than a tuning opportunity.
+
+\subsection{Perturbation robustness rating}
+Adapted from the causal rating method of Lakkaraju et al.\ for time-series
+forecasters. The fitted model is held \emph{fixed} and the data it is served is
+degraded, so the procedure needs no access to the training pipeline and is auditable
+by a third party. Five perturbations map to concrete warehouse failure modes: feature
+values dropped (missing or late filings), halved (unit-scale and concept-mapping
+errors), shifted one month stale (point-in-time slippage), the newest month withheld
+(reporting delay), and fat-tail contamination of the label (corporate actions).
+
+For perturbation $P$ the relative degradation is
+\begin{equation}
+  \delta_P \;=\; \frac{\overline{\RankIC}_{\varnothing}-\overline{\RankIC}_{P}}
+                      {\big|\overline{\RankIC}_{\varnothing}\big|}.
+\end{equation}
+GICS industry is the confounder: a perturbation may appear damaging only because it
+concentrates in an over-represented industry. With a single low-cardinality
+categorical confounder, exact stratification is not an approximation of propensity
+matching but the exact version of what it approximates, so the effect is directly
+standardized,
+\begin{equation}
+  \bar e^{\,\text{std}} \;=\; \frac{1}{|G|}\sum_{g\in G} \bar e_g ,
+\end{equation}
+and the gap $\big||\bar e|-|\bar e^{\,\text{std}}|\big|/|\bar e|$ is reported as the
+share of the apparent effect attributable to industry composition.
+
+Aggregation is \emph{worst case} rather than average --- a desk choosing a model needs
+the floor --- and maps to an ordinal rating
+\begin{equation}
+  \text{rating} =
+  \begin{cases}
+    1\ (\text{robust})   & \max_P \delta_P < 0.25,\\
+    2\ (\text{moderate}) & 0.25 \le \max_P \delta_P < 0.60,\\
+    3\ (\text{fragile})  & \text{otherwise.}
+  \end{cases}
+\end{equation}
+
+\begin{keybox}[Why a rating and not another number]
+The rating separates models that a single skill statistic ranks identically --- or
+backwards. On a controlled panel an over-parameterized fit posts a \emph{higher}
+in-sample-flavoured rank-IC ($0.78$ vs $0.34$) than a regularized one while rating
+$3$ against $1$: it memorizes, and small realistic data defects destroy it.
+\end{keybox}
+
+\subsection{Sub-population skill}
+The headline is an average over a heterogeneous universe and can hide a sign flip.
+Skill is therefore reported per bucket under two cuts that ask different questions:
+GICS sector and industry group (\emph{where} does this work, in the terms a PM
+allocates by) and within-date quintiles of the point-in-time Fama--French loadings
+$\beta_{\text{mkt}},\beta_{\text{smb}},\beta_{\text{hml}},\beta_{\text{mom}}$
+(\emph{what kind of company} does it work on, in the terms a risk model prices). Each
+bucket reports $\overline{\RankIC}$, its $t$-statistic, $R^2_{\text{oos}}$ and the
+decile spread; buckets below a minimum name count are computed but flagged, because a
+headline resting on one is a finding rather than a result.
+
+On the live US panel the two cuts are informative in exactly this way: an incumbent
+specification whose overall rank-IC is $-0.013$ carries $+0.040$ in Industrials, and
+its skill concentrates in the lowest market-beta quintile.
+
+\subsection{Champion selection and combination}
+Candidates surviving validation compete against an equal-weight combination of
+themselves, formed by averaging \emph{within-date} percentile ranks,
+\begin{equation}
+  \hat\alpha^{\text{ens}}_{i,t}
+  \;=\; \frac1M\sum_{m=1}^{M}\frac{\rank_i\big(\hat\alpha^{(m)}_{i,t}\big)}{N_t},
+\end{equation}
+which is scale-free and so combines a GBDT and an elastic net on equal terms. The
+persisted ensemble instead sums member predictions standardized by their own training
+moments, because the serving path scores a bare array with no date grouping available;
+the two agree on ordering closely enough that selection remains meaningful.
 
 \section{Rolling Fama--French factor regression}
 \label{sec:ffreg}

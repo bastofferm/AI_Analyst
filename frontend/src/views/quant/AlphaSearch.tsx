@@ -25,7 +25,10 @@ const SIZE_BANDS: { key: string; label: string; min: number | null }[] = [
 
 const HZ: Record<number, string> = { 1: "1-month", 3: "3-month", 6: "6-month", 12: "12-month" };
 
-function icQuality(ic: number | undefined): { label: string; tone: number } {
+// Exported: the research panel grades the same quantities and must not drift from these
+// thresholds — two places disagreeing about what "modest" skill means would be worse than
+// either threshold being slightly wrong.
+export function icQuality(ic: number | undefined): { label: string; tone: number } {
   if (typeof ic !== "number" || !isFinite(ic)) return { label: "—", tone: 0 };
   if (ic <= 0) return { label: "no usable skill", tone: -1 };
   if (ic < 0.01) return { label: "negligible", tone: -1 };
@@ -34,7 +37,7 @@ function icQuality(ic: number | undefined): { label: string; tone: number } {
   if (ic < 0.08) return { label: "solid", tone: 1 };
   return { label: "strong", tone: 1 };
 }
-function icirQuality(icir: number | undefined): string {
+export function icirQuality(icir: number | undefined): string {
   if (typeof icir !== "number" || !isFinite(icir)) return "—";
   const a = Math.abs(icir);
   if (a < 0.2) return "noisy";
@@ -42,7 +45,7 @@ function icirQuality(icir: number | undefined): string {
   if (a < 1.0) return "fairly consistent";
   return "consistent";
 }
-const toneCls = (t: number) => (t > 0 ? "text-green-700" : t < 0 ? "text-red-700" : "text-navy");
+export const toneCls = (t: number) => (t > 0 ? "text-green-700" : t < 0 ? "text-red-700" : "text-navy");
 
 function yearsBetween(a?: string, b?: string): number | null {
   if (!a || !b) return null;
@@ -65,11 +68,17 @@ export function AlphaSearch({
   const [sortKey, setSortKey] = useState<SortKey>("return");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  const rows = alpha?.rows ?? [];
+  // Memoized: `alpha?.rows ?? []` produces a NEW array identity on every render whenever
+  // `alpha` is null or has no rows. That array is a dependency of the effect below, whose
+  // empty branch unconditionally calls setNameCaps(new Map()) — never Object.is-equal to the
+  // previous Map — so the two would drive each other in a render loop for as long as the
+  // market has no trained model. QuantView is force-mounted at app start, so that state is
+  // reached on every load.
+  const rows = useMemo(() => alpha?.rows ?? [], [alpha]);
 
   // Enrich the loaded predictions with company name + market cap (one screener call).
   useEffect(() => {
-    if (!rows.length) { setNameCaps(new Map()); return; }
+    if (!rows.length) { setNameCaps((prev) => (prev.size ? new Map() : prev)); return; }
     let cancelled = false;
     const jur = jurisdiction === "JP" ? "JP" : "US";
     const dimTicker = (t: string) => (jur === "JP" && !/\.T$/i.test(t) ? `${t}.T` : t);
@@ -214,7 +223,7 @@ export function AlphaSearch({
 
 const horizonShort = (label: string) => label.replace("forward_", "");
 
-function Meta({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: number }) {
+export function Meta({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: number }) {
   return (
     <div>
       <div className="label">{label}</div>
