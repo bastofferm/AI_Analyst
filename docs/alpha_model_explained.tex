@@ -1,0 +1,832 @@
+\documentclass[11pt]{article}
+\usepackage{mzqastyle}
+\setrunningtitle{AI Analyst — The Alpha Model Explained}
+
+\begin{document}
+
+\mzqatitlepage
+  {A plain-language guide}
+  {The Alpha Model, Explained}
+  {What it predicts, how it is trained, and how four AI agents train it}
+  {This volume explains the quantitative desk's return-prediction model in ordinary
+   language. It assumes you are comfortable with averages, standard deviations,
+   correlation and the idea of fitting a line to data, and it assumes nothing at all
+   about finance or machine learning. Every technical term is defined the first time
+   it appears, and the terms are collected again in a glossary at the end.
+
+   The other volumes state the same material formally: the \emph{Quantitative \& ML
+   Models} volume gives the equations, and the \emph{qlib Integration} volume gives
+   the engineering. This one is the way in.}
+  {The Alpha Model, Explained \quad·\quad Generated 18 August 2026}
+
+\mzqatoc
+\clearpage
+
+%======================================================================
+\part*{Part I\quad What the model is trying to do}
+
+\section{The question}
+
+Imagine you have five thousand companies in front of you and one question: over the
+next year, which of them will do better than the others?
+
+Notice what the question is \emph{not}. It is not ``will Apple's share price go up?''
+and it is not ``will the market crash?''. It is a question about \textbf{relative}
+performance --- about ordering the companies from best to worst. This distinction has
+a name.
+
+\begin{specbox}
+\textbf{Cross-sectional} means \emph{comparing many things to each other at a single
+moment in time}. A \emph{cross-section} is one such snapshot: all five thousand
+companies as they stood on 31 January 2024. The opposite is \textbf{time-series},
+which follows one thing as it changes over time.
+
+Our model is cross-sectional. Every month it looks at the whole snapshot and sorts
+the companies. It never tries to say whether the market as a whole will rise.
+\end{specbox}
+
+Why sort rather than forecast a number? Because sorting is both easier and more
+useful. Easier, because you can be wrong about the general level of returns and still
+be right about the ordering --- if a model says A will return $8\%$ and B will return
+$3\%$, and in reality they return $-2\%$ and $-7\%$, the \emph{numbers} were badly
+wrong but the \emph{ordering} was perfect, and a portfolio that bought A and avoided B
+made money. More useful, because portfolio construction consumes an ordering: you buy
+the top of the list and avoid the bottom.
+
+\begin{keybox}[The word ``alpha'']
+In finance, \textbf{alpha} means return that is \emph{not} explained by simply being
+exposed to the market. If the market rises $10\%$ and your portfolio rises $10\%$, you
+earned no alpha --- you could have got that by buying an index fund. If the market
+rises $10\%$ and you earn $14\%$ with the same amount of risk, the extra $4\%$ is
+alpha. The name comes from the symbol $\alpha$ for the intercept in a regression, which
+is where the unexplained part shows up. An ``alpha model'' is a model whose job is to
+find that unexplained part.
+\end{keybox}
+
+\section{The data: a panel}
+
+The model learns from a \textbf{panel}, which is a table with two index dimensions
+instead of one. An ordinary table has one row per thing. A panel has one row per
+\emph{thing per period}:
+
+\begin{center}\small
+\begin{tabular}{@{}ll cccc c@{}}
+\toprule
+\tabhead{Month} & \tabhead{Company} & \multicolumn{4}{c}{\tabhead{Features (inputs)}} & \tabhead{Label} \\
+\cmidrule(lr){3-6}\cmidrule(l){7-7}
+ & & book/market & ROE & sales growth & \dots & next 12m return \\
+\midrule
+2019-01 & AAPL & 0.21 & 0.49 & $-0.02$ & \dots & $+0.86$ \\
+2019-01 & JPM  & 0.78 & 0.13 & $+0.04$ & \dots & $+0.21$ \\
+2019-01 & \dots & & & & & \\
+2019-02 & AAPL & 0.20 & 0.49 & $-0.02$ & \dots & $+0.79$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Three pieces of vocabulary, all visible in that table.
+
+\begin{specbox}
+A \textbf{feature} (also called a \emph{factor} or a \emph{predictor}) is one measured
+property of a company that we feed into the model as input. ``Book-to-market'' ---
+the accounting value of the company divided by its stock-market value --- is a
+feature. So is return on equity. The model currently uses about $66$ of them, all
+drawn from regulatory filings.
+
+A \textbf{label} (also called the \emph{target} or the \emph{response}) is the thing
+we are trying to predict. Here it is the company's total return over the next $1$,
+$3$, $6$ or $12$ months, depending on which model you are looking at.
+
+\textbf{Supervised learning} is the name for this whole setup: learning from examples
+where you can see both the inputs and the correct answer. It is ``supervised'' in the
+sense that the historical answer supervises the learning.
+\end{specbox}
+
+The features are grouped into four families, which is just a convenient way of talking
+about what kind of thing each one measures:
+
+\begin{center}\small
+\begin{tabular}{@{}>{\bfseries\color{navy}}l p{10.2cm}@{}}
+\toprule
+\tabhead{Family} & \tabhead{Roughly, it asks} \\
+\midrule
+value    & Is this company cheap relative to what it owns or earns? \\
+quality  & Is this a good business --- profitable, efficient, converting profit to cash? \\
+growth   & Is it getting bigger, and is it spending to get bigger? \\
+market factor & How has the stock itself behaved --- volatile, trending, sensitive to the market? \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{The single most important rule}
+
+Everything in this document is downstream of one rule, so it is worth stating before
+anything else.
+
+\begin{keybox}[Never let the model see the future]
+When the model makes a prediction for January 2019, it must use only information that
+was genuinely available in January 2019. Not information we happen to know now.
+\end{keybox}
+
+This sounds obvious and is violated constantly, usually by accident. The failure has a
+name.
+
+\begin{specbox}
+\textbf{Lookahead bias} is any leakage of future information into a decision that was
+supposed to be made in the past. A model with lookahead bias produces spectacular
+results that evaporate the moment it is used for real, because in reality the future
+information is not there.
+\end{specbox}
+
+Two examples of where it creeps in, both of which we guard against explicitly.
+
+\textbf{Reporting delay.} A company's results for the quarter ending 31 December are
+not published on 31 December. They appear weeks or months later. If we attached
+December's accounting figures to a December prediction, the model would be using
+numbers nobody had yet. We therefore lag every fundamental figure by $90$ days: the
+December quarter only becomes usable at the end of March. This is called
+\textbf{point-in-time} data --- data as it was actually known at the time, rather than
+as it is known now.
+
+\textbf{Survivorship.} If you build a list of companies from today's index and then
+look at their history, you have accidentally selected for companies that survived.
+Every firm that went bankrupt is missing, so the historical returns look far too good.
+The fix is to build the universe from what existed at each date.
+
+\section{Making companies comparable}
+
+There is a practical problem with the panel. Book-to-market is a ratio around $0.3$;
+market capitalization is a number in the billions; sales growth is a small percentage.
+A model has no way of knowing that a $0.1$ change in one means something quite
+different from a $0.1$ change in another. And the whole market drifts: valuations in
+2021 were high across the board, so a book-to-market of $0.3$ meant something different
+in 2021 than in 2009.
+
+Both problems are solved by \textbf{standardizing within each month}.
+
+\begin{specbox}
+A \textbf{z-score} rescales a number by asking ``how many standard deviations from the
+average is it?'':
+\[
+  z \;=\; \frac{x - \text{mean}}{\text{standard deviation}}.
+\]
+A z-score of $0$ is exactly average, $+2$ is well above, $-2$ is well below. Because
+the units cancel, z-scores from completely different quantities are comparable.
+
+We compute the mean and standard deviation \emph{within each month, across companies}
+--- a \textbf{cross-sectional} z-score. So the model never sees ``book-to-market
+$=0.3$''. It sees ``this company is $0.8$ standard deviations cheaper than its peers
+were that month''. The general level of the market cancels out automatically.
+\end{specbox}
+
+This is why the model is a \emph{ranking} model almost by construction: after
+standardization, all it can see is each company's position relative to its
+contemporaries.
+
+%======================================================================
+\part*{Part II\quad Training}
+
+\section{What ``training'' actually means}
+
+\textbf{Training} (or \emph{fitting}) a model means: show it many historical examples
+where both the features and the true answer are known, and let it adjust its internal
+settings until its predictions on those examples are as close as possible to the truth.
+
+That is all it is. There is no understanding involved. The model is searching for a
+function --- a rule that turns $66$ standardized numbers into one score --- that
+happened to work well on the past.
+
+The kind of function we use is a \textbf{gradient-boosted decision tree ensemble},
+which sounds forbidding and is genuinely simple once unpacked. Three ideas stack up.
+
+\begin{specbox}
+A \textbf{decision tree} is a sequence of yes/no questions ending in a number.
+``Is book-to-market above $0.4$? If yes, is return on equity above $0.1$? If yes,
+predict $+0.03$.'' Drawn out, the branching looks like a tree.
+
+An \textbf{ensemble} is many models whose answers are combined. One tree is crude;
+hundreds of trees, added together, can express a subtle rule.
+
+\textbf{Gradient boosting} is a specific way of building the ensemble: rather than
+building all the trees independently, each new tree is trained to correct the errors
+the previous trees are still making. The first tree captures the strongest pattern,
+the second cleans up what the first got wrong, and so on. ``Gradient'' refers to the
+calculus used to work out which direction ``wrong'' points in.
+\end{specbox}
+
+We use an implementation called \textbf{LightGBM}, which is simply a fast, well-tested
+version of this idea. The research loop can also fit five other model types --- ridge
+regression, elastic net, random forests and two dimension-reduction methods --- for
+reasons we come to in Part IV.
+
+\begin{specbox}
+A \textbf{parameter} is something the model learns from the data --- where each tree
+puts its split points, what number each branch predicts.
+
+A \textbf{hyperparameter} is something \emph{you} choose before training starts: how
+many trees, how deep each one may be, how strongly to penalize complexity. The model
+cannot learn these; they are settings of the learning procedure itself. Choosing them
+well is most of what ``tuning a model'' means, and it is a central part of what the
+agents in Part IV argue about.
+\end{specbox}
+
+\section{The thing that goes wrong: overfitting}
+
+Here is the central difficulty of the entire field.
+
+A model with enough flexibility can fit \emph{any} historical data perfectly ---
+including the parts that were pure luck. Stock returns are overwhelmingly noise; the
+predictable component is tiny. A sufficiently complicated model will happily memorize
+the noise, achieve a beautiful score on the data it was shown, and be worthless on
+anything new.
+
+\begin{specbox}
+\textbf{Overfitting} is learning the accidents of your particular sample instead of
+the underlying pattern. The give-away is a large gap between performance on data the
+model was trained on and performance on data it has never seen.
+\end{specbox}
+
+Everything that follows in this Part is machinery for detecting overfitting honestly.
+
+\begin{keybox}[We measure this directly]
+Our reports carry a ``train-minus-out-of-sample gap''. On a controlled test, a
+deliberately over-flexible model scored a perfect $1.000$ on its training data and
+$0.133$ on fresh data --- a gap of $0.87$, i.e.\ it had memorized. A properly
+regularized model scored $0.34$ and $0.27$: a gap of $0.08$, i.e.\ it had learned
+something real. Note that the memorizing model looked \emph{far better} on the
+training data. That is exactly why one number is never enough.
+\end{keybox}
+
+\section{Splitting the data honestly}
+
+The defence against overfitting is to hold data back.
+
+\begin{specbox}
+The panel is cut into three consecutive time periods:
+\begin{itemize}
+  \item \textbf{Training set} --- the model learns from this.
+  \item \textbf{Validation set} --- used to decide \emph{when to stop} learning, and to
+        compare candidate settings. The model does not learn from it directly, but
+        choices are made using it, so it is partly used up.
+  \item \textbf{Test set} --- touched only at the very end, to get an honest score.
+\end{itemize}
+Because our data has a time dimension, the split is \emph{chronological}: train on the
+earliest period, test on the latest. Splitting randomly would let the model train on
+2023 and be tested on 2019, which is not a situation any real user is ever in.
+\end{specbox}
+
+\textbf{Early stopping} uses the validation set: keep adding trees, and each time,
+check whether the score on the validation data is still improving. When it stops
+improving, stop adding trees --- further trees are fitting noise. This is the single
+most effective guard against overfitting in a boosted model.
+
+The words \textbf{in-sample} and \textbf{out-of-sample} recur constantly.
+\emph{In-sample} means measured on data the model was trained on --- always flattering,
+never trustworthy. \emph{Out-of-sample} means measured on data the model never saw.
+Only out-of-sample numbers are evidence.
+
+\section{The subtle leak: why a gap is needed}
+
+Now a problem specific to predicting the future, and one the pipeline originally got
+wrong.
+
+Suppose the label is the return over the next \emph{twelve} months. Take a training
+example from January 2023. Its label is the return from January 2023 to January 2024.
+To know that label at all, we must have data through January 2024.
+
+So if the training set ends in January 2023 and the validation set begins in February
+2023, the model has effectively been shown information running through January 2024 ---
+which overlaps almost the entire validation period. The two sets are not independent.
+The model will look far better than it is.
+
+\begin{specbox}
+An \textbf{embargo} (or \textbf{purge}) is a deliberate gap between the training period
+and the evaluation period, at least as long as the label horizon. With a twelve-month
+label, a model predicting June 2024 may only be trained on data whose labels were fully
+realized by June 2023.
+\end{specbox}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[font=\sffamily\footnotesize, node distance=0mm]
+  \draw[draw=border, fill=panel] (0,0) rectangle (6.4,0.72);
+  \node[text=navy] at (3.2,0.36) {training data};
+  \draw[draw=amber!70!black, fill=amberfill] (6.4,0) rectangle (9.0,0.72);
+  \node[text=ink] at (7.7,0.36) {embargo (12m)};
+  \draw[draw=navytwo, fill=navy!8] (9.0,0) rectangle (12.4,0.72);
+  \node[text=navy] at (10.7,0.36) {evaluated here};
+  \draw[arr] (0,-0.42) -- (12.4,-0.42) node[right, text=muted, font=\sffamily\scriptsize] {time};
+  \node[font=\sffamily\scriptsize, text=muted, align=center] at (7.7,-1.05)
+    {labels from the training period\\ are still unfolding across this gap};
+  \draw[arrd] (6.4,-0.62) -- (9.0,-0.62);
+\end{tikzpicture}
+\caption{The embargo. Without the amber gap, the last training examples carry labels
+that reach into the evaluation window, and the two periods share outcomes.}
+\end{figure}
+
+\begin{keybox}[This is not a small correction]
+Measured properly --- with the embargo in place --- the shipped twelve-month US model's
+skill on the baseline settings is \emph{negative}. Measured the old way, without a gap,
+it looked positive. Nothing about the model changed; only the honesty of the
+measurement did.
+\end{keybox}
+
+\section{Walk-forward: the closest thing to a rehearsal}
+
+A single train/test split gives you one number from one arbitrary cut point. A better
+procedure imitates what actually happens in use.
+
+\begin{specbox}
+In a \textbf{walk-forward} (or \emph{expanding-window}) evaluation you repeat the
+following, marching through history: train on everything up to a cutoff, predict the
+next period, record the prediction, move the cutoff forward, retrain, and continue.
+
+Every prediction is therefore made by a model that could genuinely have existed at
+that moment. Stitching them all together gives a track record rather than a single
+snapshot.
+\end{specbox}
+
+We retrain annually, which is both realistic --- nobody refits a production model every
+month --- and about twelve times cheaper than refitting monthly. Combined with the
+embargo, this is the evaluation every number in a validation report comes from.
+
+%======================================================================
+\part*{Part III\quad Judging a model}
+
+\section{Skill}
+
+\begin{specbox}
+The \textbf{information coefficient (IC)} is the correlation, within a single month,
+between what the model predicted and what actually happened. One number per month.
+
+The \textbf{rank IC} is the same thing computed on \emph{ranks} rather than raw values
+(a Spearman rather than Pearson correlation): rank the predictions $1,2,3,\dots$, rank
+the realized returns $1,2,3,\dots$, and correlate those. It is our primary measure,
+for two reasons. It is unaffected by a handful of extreme returns, and it measures
+exactly what we care about --- the ordering.
+\end{specbox}
+
+A rank IC of $1.0$ would be a perfect ordering; $0$ is no information; negative means
+the model is ordering backwards.
+
+\begin{notebox}[Calibrate your expectations]
+Stock returns are mostly noise, and the numbers here are much smaller than newcomers
+expect. A monthly-equity rank IC of about $0.03$ is a \emph{genuine, valuable} edge.
+$0.05$ is strong. Anything above roughly $0.10$ out-of-sample on real data is, in
+practice, almost always a bug or a leak rather than a discovery --- which is why the
+reports place so much weight on whether the measurement was done honestly.
+\end{notebox}
+
+Consistency matters as much as size. A model with rank IC of $0.03$ every single month
+is far more valuable than one averaging $0.03$ by way of $+0.4$ and $-0.34$.
+
+\begin{specbox}
+The \textbf{information ratio of the IC (ICIR)} divides the average IC by its standard
+deviation across months. It answers: relative to how much it bounces around, how big is
+the average?
+
+One caution. The raw ratio is often quoted alongside an annualized figure, which is
+$\sqrt{12}$ times larger for monthly data --- about $3.46\times$. Both appear in our
+reports, labelled, because comparing one against the other silently would flatter or
+penalize a model by a factor of three and a half.
+\end{specbox}
+
+\begin{specbox}
+$R^2$ \textbf{out-of-sample} asks what fraction of the variation in returns the model
+explained. In return prediction it is conventionally measured against a forecast of
+\emph{zero} rather than against the historical average, because the historical average
+is itself an estimate and benchmarking against it flatters the model. Both versions
+are reported. Expect small numbers: an out-of-sample $R^2$ of $0.005$ is respectable.
+\end{specbox}
+
+\section{Saying how sure we are}
+
+A rank IC of $0.03$ measured over $20$ months and one measured over $200$ months are
+not the same claim, but written down they look identical. So every headline figure
+carries an interval.
+
+\begin{specbox}
+A \textbf{confidence interval} is a range that plausibly contains the true value. We
+compute ours by \textbf{bootstrapping}: take the list of monthly ICs, draw a new list
+of the same length by sampling from it at random with replacement, average it, and
+repeat a few hundred times. The spread of those averages shows how much the answer
+depends on which particular months you happened to observe.
+\end{specbox}
+
+\begin{keybox}[An interval containing zero means ``no result'']
+If the $95\%$ interval runs from $-0.01$ to $+0.04$, then a true skill of zero is
+entirely consistent with what we observed. Our model validation agent treats this as
+disqualifying regardless of how good the central estimate looks, and blocks the model
+from being promoted. On the live twelve-month US model this is currently the binding
+constraint: the honest interval spans zero, so nothing is promoted.
+\end{keybox}
+
+\section{Beyond skill: is it usable, and is it really alpha?}
+
+A statistically real signal can still be worthless. Three further checks.
+
+\textbf{Is the ordering real all the way through?} Sort the companies into ten equal
+buckets by prediction --- \textbf{deciles} --- and look at the average realized return
+of each. If the model works, returns should rise steadily from bucket 1 to bucket 10.
+The \textbf{decile spread} is top bucket minus bottom bucket. But a large spread can
+come from a handful of extreme names while the middle is noise, so we also measure
+\textbf{monotonicity}: does the average return actually increase step by step? A large
+spread with poor monotonicity is a much weaker claim than it appears.
+
+\textbf{Can you trade it?} \textbf{Turnover} is the fraction of the portfolio that has
+to be replaced each month. Every replacement costs money in commissions and in moving
+the price against yourself. A signal whose gross spread is $40$ basis points a month
+against $80\%$ turnover is, after costs, roughly nothing.
+
+\textbf{Is it alpha, or is it a disguise?} This is the deepest of the three.
+
+\begin{specbox}
+Decades of research have identified a handful of broad, well-known drivers of stock
+returns, called \textbf{factors}. The standard set --- the \textbf{Fama--French}
+factors, after the economists who documented them --- includes the overall market,
+company size (small firms behaving differently from large), value (cheap versus
+expensive), profitability, investment, and momentum (recent winners continuing to win).
+
+A \textbf{beta} is the sensitivity of something to one of these factors. If your
+strategy has a large size beta, it goes up when small companies do well.
+\end{specbox}
+
+You can buy exposure to these factors extremely cheaply through index products. So if
+our model's returns turn out to be nothing more than ``it likes small cheap
+companies'', it is not worth running --- you could buy that exposure directly for a few
+basis points. We check by regressing the strategy's returns on the six factors: the
+part explained by the factors is the disguise, and the leftover intercept is the real
+alpha. If that intercept is statistically indistinguishable from zero while the
+regression explains most of the variation, the honest conclusion is that there is no
+alpha here.
+
+\section{Breaking it on purpose}
+
+Everything so far assumes the data is correct. In reality our data comes from
+regulatory filings parsed by machine, and things go wrong: a filing arrives late, a
+figure is scaled wrongly, a company's classification changes. A model that collapses
+when a small fraction of its inputs are damaged is dangerous, because bad-data days
+are exactly the days you most need it to behave.
+
+So we damage the data deliberately and see what survives. The model is held fixed; only
+its inputs are degraded.
+
+\begin{center}\small
+\begin{tabular}{@{}>{\bfseries\color{navy}}l p{8.6cm}@{}}
+\toprule
+\tabhead{We simulate} & \tabhead{Which stands for} \\
+\midrule
+Values go missing      & A filing arrives late, or the parser fails on it. \\
+Values are halved      & A units or concept-mapping error --- thousands read as millions. \\
+Everything one month stale & The point-in-time alignment slips. \\
+Newest month withheld  & Reporting delay at the live edge. \\
+Extreme returns injected & Corporate actions, or a thin stock blowing up. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+For each, we measure how much skill was lost, and aggregate to a single rating on a
+three-point scale: \textbf{1 robust}, \textbf{2 moderate}, \textbf{3 fragile}. We take
+the \emph{worst} case rather than the average, because someone choosing whether to
+trust a model needs the floor, not the typical outcome.
+
+\begin{specbox}
+One complication. Suppose damage appears to hurt a lot --- but the damage happened to
+land mostly on banks, and banks are simply harder to predict anyway. Then we have
+mistaken a property of the industry for a property of the perturbation. A variable that
+distorts a comparison this way is a \textbf{confounder}.
+
+We correct for it by \textbf{stratifying}: measure the effect \emph{separately within
+each industry} and then average those, so every industry counts equally and no industry's
+share of the sample can drive the answer. The report also states how much of the raw
+effect turned out to be composition rather than damage.
+\end{specbox}
+
+\begin{keybox}[What the rating catches that a skill score cannot]
+In a controlled test, an over-flexible model posted a skill score more than twice as
+high as a regularized one --- and rated $3$ (fragile) against $1$ (robust). It had
+memorized, so small realistic defects destroyed it. Ranked on skill alone you would
+have chosen exactly the wrong model.
+\end{keybox}
+
+\section{Where does it work?}
+
+An average over five thousand very different companies can hide a great deal,
+including a change of sign. So skill is broken out two ways, which answer different
+questions.
+
+\textbf{By industry.} Companies are classified under \textbf{GICS} (the Global Industry
+Classification Standard, the standard scheme dividing listed companies into sectors and
+industry groups). This answers ``\emph{where} does this work?'' in the terms a portfolio
+manager allocates by.
+
+\textbf{By factor exposure.} Companies are sorted into fifths by their sensitivity to
+each Fama--French factor. This answers ``\emph{what kind of company} does this work
+on?'' --- and if the skill lives entirely in the smallest fifth, that is a size bet
+wearing a costume, whatever industries those companies happen to sit in.
+
+\begin{keybox}[A real example]
+On the live US twelve-month model, the baseline settings score $-0.013$ overall ---
+slightly worse than useless. Broken out by industry, the same model scores $+0.040$ in
+Industrials. Both facts are true. Neither is visible in the headline, and the second
+one is where a researcher would start looking.
+\end{keybox}
+
+Buckets containing very few companies are computed but flagged, because a headline
+resting on eleven names is a curiosity, not a finding.
+
+%======================================================================
+\part*{Part IV\quad Agentic training}
+
+\section{Why the old way was not enough}
+
+Until recently, training worked like this: run one fit, with one fixed set of choices,
+and whatever came out became the production model.
+
+The choices were all reasonable. But nobody revisited them, nothing checked whether the
+resulting number was trustworthy, and there was no record of \emph{why} the model
+looked the way it did. When the desk's screen reported skill of $0.001$ --- its own
+label for which read ``negligible'' --- nothing in the system reacted.
+
+Worse, some of the fixed choices were quietly harmful, and two in particular:
+
+\begin{itemize}
+  \item Missing values were filled with the month's \emph{average}, and there was no
+        limit on how sparse a feature could be before it was used anyway.
+  \item Extreme returns were never trimmed during training, although the evaluation
+        code trimmed them.
+\end{itemize}
+
+Changing just those two --- filling with the \emph{median} instead, and trimming the
+most extreme returns --- moved the twelve-month US model from $-0.013$ to $+0.017$.
+Neither change is clever. Neither would ever have been tried by a procedure with no
+step in which somebody asks ``is this actually working?''.
+
+That step is what we added.
+
+\section{What an ``agent'' is here}
+
+\begin{specbox}
+A \textbf{large language model (LLM)} is a system trained to continue text --- the
+technology behind ChatGPT and its relatives. An \textbf{agent}, in this codebase, is an
+LLM given three things: a \emph{role} (who it is and what it cares about), a
+\emph{packet of information} (this round's results), and a \emph{required output
+format} it must answer in.
+
+That last constraint matters. The agents do not write prose that a human then
+interprets. Each returns a filled-in form with named fields --- a proposed change, a
+verdict, a list of findings --- which the surrounding program reads directly. This is
+called \textbf{structured output}.
+\end{specbox}
+
+Four agents, deliberately modelled on how a real research desk argues:
+
+\begin{center}\small
+\begin{tabular}{@{}>{\bfseries\color{navy}}l p{6.0cm} p{3.3cm}@{}}
+\toprule
+\tabhead{Role} & \tabhead{Asks} & \tabhead{Can} \\
+\midrule
+Quantitative Researcher & What should we change next, and why? & Propose the next settings \\
+Model Validation        & Is this result even believable? & \emph{Veto} a model \\
+Portfolio Manager       & Would I put money behind this? & End the search; approve promotion \\
+External Advisor        & What is everyone here failing to see? & Advise only \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The External Advisor is deliberately run on a \emph{different} AI provider from the
+other three whenever a second key is available. The point is not redundancy but
+independence: a different model brings different habits, and the role exists to say the
+unwelcome thing.
+
+\section{LangGraph: wiring the agents together}
+
+\begin{specbox}
+\textbf{LangGraph} is a library for building workflows as a \textbf{graph}: a set of
+\textbf{nodes} (steps) joined by \textbf{edges} (what runs next). All the steps read
+from and write to one shared dictionary called the \textbf{state}.
+
+Three features earn its place here:
+\begin{itemize}
+  \item \textbf{Branching.} An edge can be conditional --- a function looks at the state
+        and decides where to go next. This is how the loop decides to run another round
+        or stop.
+  \item \textbf{Parallelism.} Several nodes can run in the same step. Our three critics
+        do, since none of them depends on the others.
+  \item \textbf{Reducers.} If two nodes running at the same time both write to the same
+        field, something must decide how to combine them. A \textbf{reducer} is that
+        rule. Ours simply appends to a list, so all three critics' opinions are kept
+        rather than the last writer overwriting the rest.
+\end{itemize}
+\end{specbox}
+
+The same library already runs the investment committee elsewhere in this application,
+so the pattern is familiar to the codebase.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[node distance=3.2mm and 7mm, font=\sffamily\scriptsize,
+    scale=0.82, transform shape,
+    st/.style={proc, minimum width=30mm},
+    cr/.style={llm, minimum width=27mm}]
+  \node[term] (start) {START};
+  \node[st, below=of start] (prep) {load the data (once)};
+  \node[st, below=of prep] (train) {train a model};
+  \node[st, below=of train] (eval) {score it honestly};
+  \node[st, below=of eval] (pert) {try to break it};
+  \node[st, below=of pert] (rep) {write the report};
+  \node[cr, below=9mm of rep, xshift=-34mm] (val) {Validation};
+  \node[cr, below=9mm of rep] (pm) {Portfolio Mgr};
+  \node[cr, below=9mm of rep, xshift=34mm] (adv) {Advisor};
+  \begin{scope}[on background layer]
+    \node[draw=navytwo, dashed, rounded corners, fill=navy!4,
+      fit=(val)(pm)(adv), inner sep=5pt] (crit) {};
+  \end{scope}
+  \node[cr, below=8mm of crit.south, fill=navytwo!18, minimum width=34mm] (res)
+    {Researcher proposes};
+  \node[dec, below=5mm of res] (g1) {again?};
+  \node[st, below=7mm of g1] (sel) {pick the best};
+  \node[st, below=of sel] (prom) {promote, or not};
+  \node[term, below=4mm of prom] (end1) {END};
+
+  \draw[arr] (start) -- (prep); \draw[arr] (prep) -- (train);
+  \draw[arr] (train) -- (eval); \draw[arr] (eval) -- (pert); \draw[arr] (pert) -- (rep);
+  \draw[arr] (rep) -- (val); \draw[arr] (rep) -- (pm); \draw[arr] (rep) -- (adv);
+  \draw[arr] (val) -- (res); \draw[arr] (pm) -- (res); \draw[arr] (adv) -- (res);
+  \draw[arr] (res) -- (g1);
+  \draw[arr] (g1) -- node[lbl, right]{no} (sel);
+  \draw[arr] (sel) -- (prom); \draw[arr] (prom) -- (end1);
+  \draw[arr] (g1.west) -- ++(-46mm,0) node[lbl, above, pos=0.4]{yes} |- (train.west);
+\end{tikzpicture}
+\caption{One round of the loop. The three critics run at the same time; the researcher
+waits for all of them before proposing the next change.}
+\end{figure}
+
+\section{One round, step by step}
+
+\begin{enumerate}
+  \item \textbf{Load the data.} Done once and reused --- it is the slow part.
+  \item \textbf{Train.} Apply this round's settings and fit a model.
+  \item \textbf{Score it.} Purged walk-forward, then the full battery from Part III.
+  \item \textbf{Try to break it.} The perturbations, and the robustness rating.
+  \item \textbf{Write the report.} Everything above, assembled into one document.
+  \item \textbf{The critics read it, simultaneously.} Validation looks for reasons to
+        disbelieve it. The Portfolio Manager asks whether it is worth trading. The
+        Advisor argues the other side.
+  \item \textbf{The researcher responds} --- reading all three critiques --- and proposes
+        one coherent change, with a prediction of what it should do.
+  \item \textbf{Continue or stop.}
+\end{enumerate}
+
+The loop stops for any of five reasons: the round budget is used up; the Portfolio
+Manager accepts or rejects; the researcher declares the search finished; the researcher
+proposes nothing valid; or the score has not improved for two consecutive rounds. The
+reason is recorded, so the report says why it ended rather than leaving you to guess.
+
+\section{Two things the AI is not allowed to do}
+
+An LLM steering a training pipeline is a genuine risk, and two specific dangers are
+closed off structurally rather than by asking nicely.
+
+\subsection*{It cannot run code}
+
+The researcher does not write code and never touches the data. It fills in a form
+listing which settings to change. A separate, ordinary piece of program logic then
+checks that form: every field name must be one of the known settings, every value must
+lie in an allowed range, and hyperparameters belonging to a different model type are
+discarded. Anything rejected is reported back to the agent in the next round.
+
+So a proposal of ``set the learning rate to $500$'' becomes ``learning rate clamped to
+the maximum'', and a proposal naming a setting that does not exist is simply dropped. The
+set of things the agents can actually cause is exactly the set we specified.
+
+\subsection*{It cannot see which companies are which}
+
+This one is subtler and matters more.
+
+\begin{keybox}[Why the agents are never shown company names]
+The AI models we use were trained on text from the internet, which includes financial
+news up to some cutoff date. That cutoff is \emph{after} the period we evaluate on. So
+an agent shown the names of the best-performing stocks in our test window may
+``recognize'' them --- not from the diagnostics, but from memory.
+
+It could then steer the settings toward those companies. The resulting skill score
+would be real, reproducible, and completely worthless, because the model would be
+tuned to a future the agent already knew.
+\end{keybox}
+
+The packet handed to an agent therefore contains aggregate statistics only: skill
+numbers, industry-level summaries, counts. No company names, no per-company returns, no
+ranked lists. A guard checks every packet against the actual list of companies in the
+run before it is sent.
+
+\begin{notebox}[A detail that mattered in practice]
+The first version of that guard looked for anything \emph{shaped} like a stock symbol.
+It failed immediately on real data, because many genuine US tickers are ordinary
+English words --- \code{ALL}, \code{ON}, \code{MAX}, \code{GAP}, \code{REAL},
+\code{CARE}. Almost every sentence an agent wrote tripped it. The working version
+checks against the run's real list of companies, and only in places where an identifier
+could actually sit --- not inside prose.
+\end{notebox}
+
+\section{Choosing a winner, and when not to}
+
+At the end, the surviving candidates compete --- along with a \textbf{combination} of
+them.
+
+\begin{specbox}
+An \textbf{ensemble} here means averaging several models' rankings. It often beats every
+individual model, because each one's errors are partly independent, so averaging cancels
+some of the noise while keeping the shared signal. The loop produces its candidates
+anyway, so testing the combination costs nothing extra.
+\end{specbox}
+
+The winner is promoted to production \emph{only} if all of the following hold:
+
+\begin{itemize}
+  \item it beats the model currently in production, by a margin, measured out-of-sample;
+  \item the Model Validation unit did not veto it;
+  \item the Portfolio Manager approved;
+  \item it is not rated fragile.
+\end{itemize}
+
+Otherwise the live model is left alone, the candidate is saved separately, and the
+report states which condition failed. When every round is vetoed, the run still names
+its best attempt and marks it unpromotable --- more useful than reporting nothing.
+
+\begin{notebox}[An honest caveat we print on every run]
+The model currently in production had its score measured the old way --- one split, no
+embargo. The challenger's score is measured the new, stricter way. The comparison
+therefore favours the incumbent, and the reports say so, because quietly comparing a
+lenient number against a strict one would be the easiest way to reach a wrong
+conclusion.
+\end{notebox}
+
+\section{What you get out}
+
+Every round produces a validation report, and every run produces a downloadable
+dossier: the skill numbers with their intervals, the robustness rating and what broke
+it, the industry and factor-exposure breakdowns, which features mattered and whether
+that ranking is stable, and all four agents' reasoning in their own words.
+
+The point is not that the machine found the answer. It is that the reasoning is written
+down --- what was tried, what it scored, who objected, and why the thing that shipped
+(or did not ship) was chosen.
+
+%======================================================================
+\section*{Glossary}
+\addcontentsline{toc}{section}{Glossary}
+
+\begin{center}\small
+\begin{tabular}{@{}>{\bfseries\color{navy}}l p{10.0cm}@{}}
+\toprule
+\tabhead{Term} & \tabhead{Meaning} \\
+\midrule
+Agent & An LLM given a role, a packet of data, and a required answer format. \\
+Alpha & Return not explained by exposure to known market factors. \\
+Beta & Sensitivity of a return stream to one such factor. \\
+Bootstrap & Estimating uncertainty by resampling the data you already have. \\
+Confounder & A third variable that distorts an apparent relationship. \\
+Cross-sectional & Comparing many companies at one moment (vs.\ one company over time). \\
+Decile & One tenth of the sorted list. \\
+Early stopping & Halting training when validation performance stops improving. \\
+Embargo (purge) & A deliberate gap between training and evaluation periods. \\
+Ensemble & Several models combined into one prediction. \\
+Factor & (i) an input feature; (ii) a known broad driver of returns, e.g.\ size, value. \\
+Feature & One measured company property used as model input. \\
+Fama--French factors & The standard set: market, size, value, profitability, investment, momentum. \\
+GICS & The standard scheme classifying companies into sectors and industries. \\
+Gradient boosting & Building an ensemble where each model corrects its predecessors' errors. \\
+Hyperparameter & A setting chosen before training, not learned from data. \\
+IC & Information coefficient: correlation between prediction and outcome. \\
+ICIR & Average IC divided by its standard deviation --- consistency of skill. \\
+In-sample & Measured on data the model trained on. Never trustworthy alone. \\
+Label & The quantity being predicted; here, forward return. \\
+LangGraph & A library for building workflows as graphs of steps over shared state. \\
+Lookahead bias & Accidentally using information not available at the time. \\
+Monotonicity & Whether returns rise steadily across prediction deciles. \\
+Out-of-sample & Measured on data the model never saw. The only real evidence. \\
+Overfitting & Learning the noise in your sample rather than the pattern. \\
+Panel & A table indexed by both entity and time. \\
+Point-in-time & Data as it was actually known at the historical date. \\
+Rank IC & IC computed on ranks; robust, and matches what we care about. \\
+Reducer & The rule for merging concurrent writes to a shared field. \\
+$R^2$ out-of-sample & Fraction of variation explained, on unseen data. \\
+State & The shared dictionary all graph steps read and write. \\
+Structured output & Requiring the LLM to answer in a fixed schema. \\
+Supervised learning & Learning from examples where the answer is known. \\
+Turnover & The share of the portfolio replaced each period. \\
+Winsorizing & Replacing extreme values with less extreme ones instead of deleting them. \\
+z-score & $(x-\text{mean})/\text{standard deviation}$; puts different quantities on one scale. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\begin{center}\small\color{muted}
+The formal statements live in the \emph{Quantitative \& ML Models} volume; the
+implementation in the \emph{qlib Integration} volume. If a term here still feels
+slippery, that is worth saying --- the point of this volume is that none of it should.
+\end{center}
+
+\end{document}
